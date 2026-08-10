@@ -27,7 +27,7 @@ AnkiAutomata eliminates the tedious process of manually creating vocabulary flas
 Clone the repository and set up your virtual environment:
 
 ```bash
-git clone [https://github.com/yourusername/AnkiAutomata.git](https://github.com/yourusername/AnkiAutomata.git)
+git clone [https://github.com/SMani24/AnkiAutomata.git](https://github.com/SMani24/AnkiAutomata.git)
 cd AnkiAutomata
 
 # Create and activate the virtual environment
