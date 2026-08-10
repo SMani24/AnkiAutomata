@@ -1,0 +1,20 @@
+{
+  "anki": {
+    "url": "http://127.0.0.1:8765",
+    "default_deck": "University::RL",
+    "model_name": "English words",
+    "tags": ["AnkiAutomata"]
+  },
+  "scraper": {
+    "base_url": "https://dictionary.cambridge.org/dictionary/english/",
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+  },
+  "templates": {
+    "front": "<b>{word}</b>",
+    "highlight_open_tag": "<b style=\"color:red;\">",
+    "highlight_close_tag": "</b>",
+    "example_bullet": "• {example}",
+    "example_separator": "<br><br>",
+    "back_layout": "<div style=\"text-align: left;\"><b>Meaning:</b> {definition}<br><br>{examples}</div>"
+  }
+}
