@@ -27,7 +27,7 @@ AnkiAutomata eliminates the tedious process of manually creating vocabulary flas
 Clone the repository and set up your virtual environment:
 
 ```bash
-git clone [https://github.com/yourusername/AnkiAutomata.git](https://github.com/yourusername/AnkiAutomata.git)
+git clone [https://github.com/SMani24/AnkiAutomata.git](https://github.com/SMani24/AnkiAutomata.git)
 cd AnkiAutomata
 
 # Create and activate the virtual environment
@@ -36,3 +36,61 @@ source envAnkiAutomata/bin/activate  # On Windows use: envAnkiAutomata\Scripts\a
 
 # Install required dependencies
 pip install requests beautifulsoup4
+```
+
+## ⚙️ Configuration
+
+Before running the script, ensure your `config.json` file matches your specific Anki setup. 
+
+**Crucial Step:** The `"model_name"` and the dictionary keys under `"fields"` in `main.py` must perfectly match the Note Type and field names in your Anki database (e.g., `"Front"`, `"Example sentence"`, `"Pronounciation"`, `"Back"`).
+
+```json
+{
+  "anki": {
+    "url": "[http://127.0.0.1:8765](http://127.0.0.1:8765)",
+    "default_deck": "University::RL",
+    "model_name": "English words",
+    "tags": ["AnkiAutomata"]
+  },
+  "templates": {
+    "front": "<b>{word}</b>",
+    "highlight_open_tag": "<b style=\"color:red;\">",
+    "highlight_close_tag": "</b>",
+    "example_bullet": "• {example}",
+    "example_separator": "<br><br>",
+    "back_layout": "<div style=\"text-align: left;\"><b>Meaning:</b> {definition}<br><br>{examples}</div>"
+  }
+}
+```
+
+## 💻 Usage
+
+Make sure Anki is open in the background, then run the script:
+
+```bash
+python3 main.py
+```
+
+**Example Session:**
+```text
+=========================================
+         AnkiAutomata Setup              
+=========================================
+
+Enter target deck [University::RL]: 
+
+=== AnkiAutomata | Deck: University::RL ===
+Type 'quit' or 'exit' to stop.
+
+Target Word: serendipity
+Book Sentence (optional): We found the optimal pathfinding trajectory purely by serendipity.
+  -> Scraping Cambridge data...
+
+  [+] SUCCESS! 'serendipity' added to University::RL.
+
+Press Enter to continue...
+```
+
+## ⚠️ Notes & Fallbacks
+* If a word is not found on Cambridge due to a complex variation, the tool will pause and allow you to manually paste a direct URL to the correct dictionary page.
+* To exit the interactive loop, simply type `quit` or `exit` at any prompt.
