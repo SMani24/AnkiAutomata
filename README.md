@@ -36,7 +36,6 @@ source envAnkiAutomata/bin/activate  # On Windows use: envAnkiAutomata\Scripts\a
 
 # Install required dependencies
 pip install requests beautifulsoup4
-<<<<<<< HEAD
 ```
 
 ## ⚙️ Configuration
@@ -95,5 +94,3 @@ Press Enter to continue...
 ## ⚠️ Notes & Fallbacks
 * If a word is not found on Cambridge due to a complex variation, the tool will pause and allow you to manually paste a direct URL to the correct dictionary page.
 * To exit the interactive loop, simply type `quit` or `exit` at any prompt.
-=======
->>>>>>> 988803a60de605206ba83dade0ae065a1611cce2
