@@ -1,0 +1,9 @@
+# Virtual Environment
+envAnkiAutomata/
+
+# Python Cache files
+__pycache__/
+*.pyc
+
+# Downloaded Test Files
+*.mp3
