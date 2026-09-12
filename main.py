@@ -8,6 +8,7 @@ import io
 import pygame
 import socket
 import threading
+import re
 import engine
 
 pygame.mixer.init()
@@ -23,6 +24,10 @@ class DeckSelectionDialog(ctk.CTkToplevel):
         
         self.transient(parent)
         self.grab_set()
+        
+        self.bind("<Control-w>", lambda e: self.destroy())
+        self.bind("<Control-W>", lambda e: self.destroy())
+        self.bind("<Escape>", lambda e: self.destroy())
         
         style = ttk.Style(self)
         mode = ctk.get_appearance_mode()
@@ -80,29 +85,51 @@ class AnkiAutomataApp(ctk.CTk):
         super().__init__()
             
         self.title("AnkiAutomata")
-        self.geometry("1040x700")
-        self.minsize(940, 580)
+        
+        saved_w = engine.get_preference('window_width', 1040)
+        saved_h = engine.get_preference('window_height', 720)
+        try:
+            self.geometry(f"{saved_w}x{saved_h}")
+        except Exception:
+            self.geometry("1040x720")
+            
+        self.minsize(940, 590)
+        self.protocol("WM_DELETE_WINDOW", self.on_closing)
+        
+        self.bind_all("<Control-w>", self.on_closing)
+        self.bind_all("<Control-W>", self.on_closing)
+        try:
+            self.bind_all("<Command-w>", self.on_closing)
+            self.bind_all("<Command-W>", self.on_closing)
+        except Exception:
+            pass
         
         self.current_scraped_data = None
+        self._is_dragging_splitter = False
+        self._is_dragging_w_splitter = False
+        
+        self.user_pref_def_height = engine.get_preference('user_def_height', 120)
+        self.user_pref_left_width = engine.get_preference('user_left_width', 380)
         
         self._setup_fonts()
         
-        # Local IPC Server for shortcuts
         self.search_triggered = False
         self.server_thread = threading.Thread(target=self.start_local_server, daemon=True)
         self.server_thread.start()
         self.check_triggers()
             
-        self.grid_columnconfigure(0, weight=4) 
-        self.grid_columnconfigure(1, weight=6) 
+        # Layout Columns: Col 0 (Left), Col 1 (Width Splitter), Col 2 (Right)
+        self.grid_columnconfigure(0, weight=0, minsize=self.user_pref_left_width)
+        self.grid_columnconfigure(1, weight=0)
+        self.grid_columnconfigure(2, weight=1)
         self.grid_rowconfigure(0, weight=1)
         
         # --- LEFT COLUMN (Inputs & Log) ---
         self.left_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.left_frame.grid(row=0, column=0, sticky="nsew", padx=(20, 10), pady=20)
+        self.left_frame.grid(row=0, column=0, sticky="nsew", padx=(20, 0), pady=20)
+        self.left_frame.grid_columnconfigure(0, weight=1)
         self.left_frame.grid_rowconfigure(2, weight=1) 
         
-        # Header Row with App Title and Text Scale Dropdown
         self.header_frame = ctk.CTkFrame(self.left_frame, fg_color="transparent")
         self.header_frame.grid(row=0, column=0, pady=(0, 15), sticky="ew")
         
@@ -156,20 +183,48 @@ class AnkiAutomataApp(ctk.CTk):
         self.sentence_text.grid(row=2, column=1, padx=(0, 15), pady=(10, 20), sticky="ew")
         
         self.log_area = ctk.CTkTextbox(self.left_frame, height=90, font=self.fonts["log"], fg_color=("gray95", "gray10"))
-        self.log_area.grid(row=3, column=0, sticky="esw", pady=(20, 0))
+        self.log_area.grid(row=3, column=0, sticky="sew", pady=(20, 0))
         self.log_area.insert("0.0", "System ready. Highlight text and press Ctrl+Alt+W.\n")
         self.log_area.configure(state="disabled")
 
-        # --- RIGHT COLUMN (Editable Preview & Audio) ---
+        # --- VERTICAL SPLITTER (Width Adjustment) ---
+        self.v_splitter = ctk.CTkFrame(
+            self,
+            width=8,
+            corner_radius=4,
+            fg_color=("gray80", "gray28"),
+            cursor="sb_h_double_arrow"
+        )
+        self.v_splitter.grid(row=0, column=1, sticky="ns", padx=6, pady=20)
+        
+        self.v_grip_indicator = ctk.CTkFrame(
+            self.v_splitter,
+            width=3,
+            height=36,
+            corner_radius=2,
+            fg_color=("gray55", "gray50"),
+            cursor="sb_h_double_arrow"
+        )
+        self.v_grip_indicator.place(relx=0.5, rely=0.5, anchor="center")
+        
+        for w in (self.v_splitter, self.v_grip_indicator):
+            w.bind("<Enter>", lambda e: self._on_w_splitter_hover(True))
+            w.bind("<Leave>", lambda e: self._on_w_splitter_hover(False))
+            w.bind("<Button-1>", self._on_w_splitter_press)
+            w.bind("<B1-Motion>", self._on_w_splitter_drag)
+            w.bind("<ButtonRelease-1>", self._on_w_splitter_release)
+
+        # --- RIGHT COLUMN (Split-Pane Editor & Audio) ---
         self.right_frame = ctk.CTkFrame(self, corner_radius=15)
-        self.right_frame.grid(row=0, column=1, sticky="nsew", padx=(10, 20), pady=20)
+        self.right_frame.grid(row=0, column=2, sticky="nsew", padx=(0, 20), pady=20)
         self.right_frame.grid_columnconfigure(0, weight=1)
-        self.right_frame.grid_rowconfigure(5, weight=1)
+        
+        self.right_frame.grid_rowconfigure(3, weight=0)
+        self.right_frame.grid_rowconfigure(6, weight=1)
         
         self.word_header = ctk.CTkLabel(self.right_frame, text="Dictionary Editor", font=self.fonts["section"])
         self.word_header.grid(row=0, column=0, padx=20, pady=(15, 5), sticky="w")
         
-        # Meaning Selector and "Auto-combine All Meanings" Switch
         self.sense_frame = ctk.CTkFrame(self.right_frame, fg_color="transparent")
         self.sense_frame.grid(row=1, column=0, sticky="ew", padx=20, pady=(0, 5))
         
@@ -192,13 +247,42 @@ class AnkiAutomataApp(ctk.CTk):
         self.auto_all_switch.pack(side="right")
 
         self.def_label = ctk.CTkLabel(self.right_frame, text="Definition (Editable):", font=self.fonts["label"], text_color=("gray30", "gray70"))
-        self.def_label.grid(row=2, column=0, padx=20, pady=(5, 5), sticky="w")
-        self.def_area = ctk.CTkTextbox(self.right_frame, font=self.fonts["editor"], fg_color=("gray95", "gray15"), wrap="word", height=75)
-        self.def_area.grid(row=3, column=0, sticky="ew", padx=20, pady=(0, 10))
+        self.def_label.grid(row=2, column=0, padx=20, pady=(5, 2), sticky="w")
         
-        # Examples Toolbar
+        self.def_area = ctk.CTkTextbox(self.right_frame, font=self.fonts["editor"], fg_color=("gray95", "gray15"), 
+                                       wrap="word", height=self.user_pref_def_height)
+        self.def_area.grid(row=3, column=0, sticky="ew", padx=20, pady=(0, 4))
+        
+        # Horizontal Splitter (Height Adjustment)
+        self.splitter = ctk.CTkFrame(
+            self.right_frame,
+            height=9,
+            corner_radius=4,
+            fg_color=("gray80", "gray28"),
+            cursor="sb_v_double_arrow"
+        )
+        self.splitter.grid(row=4, column=0, sticky="ew", padx=20, pady=(2, 6))
+        
+        self.grip_indicator = ctk.CTkFrame(
+            self.splitter,
+            width=36,
+            height=3,
+            corner_radius=2,
+            fg_color=("gray55", "gray50"),
+            cursor="sb_v_double_arrow"
+        )
+        self.grip_indicator.place(relx=0.5, rely=0.5, anchor="center")
+        
+        for w in (self.splitter, self.grip_indicator):
+            w.bind("<Enter>", lambda e: self._on_splitter_hover(True))
+            w.bind("<Leave>", lambda e: self._on_splitter_hover(False))
+            w.bind("<Button-1>", self._on_splitter_press)
+            w.bind("<B1-Motion>", self._on_splitter_drag)
+            w.bind("<ButtonRelease-1>", self._on_splitter_release)
+        
+        # Examples Section
         self.ex_header_frame = ctk.CTkFrame(self.right_frame, fg_color="transparent")
-        self.ex_header_frame.grid(row=4, column=0, padx=20, pady=(5, 5), sticky="ew")
+        self.ex_header_frame.grid(row=5, column=0, padx=20, pady=(2, 5), sticky="ew")
         
         self.ex_label = ctk.CTkLabel(self.ex_header_frame, text="Examples (Editable):", font=self.fonts["label"], text_color=("gray30", "gray70"))
         self.ex_label.pack(side="left")
@@ -209,13 +293,13 @@ class AnkiAutomataApp(ctk.CTk):
         self.all_ex_btn.pack(side="right")
         
         self.ex_area = ctk.CTkTextbox(self.right_frame, font=self.fonts["editor"], fg_color=("gray95", "gray15"), wrap="word")
-        self.ex_area.grid(row=5, column=0, sticky="nsew", padx=20, pady=(0, 15))
+        self.ex_area.grid(row=6, column=0, sticky="nsew", padx=20, pady=(0, 15))
         self.ex_area.bind('<Return>', self.auto_bullet)
         
         self.reset_editor()
 
         self.audio_frame = ctk.CTkFrame(self.right_frame, fg_color="transparent")
-        self.audio_frame.grid(row=6, column=0, sticky="ew", padx=20, pady=(0, 15))
+        self.audio_frame.grid(row=7, column=0, sticky="ew", padx=20, pady=(0, 15))
         self.audio_frame.grid_columnconfigure(0, weight=1)
         self.audio_frame.grid_columnconfigure(1, weight=1)
         
@@ -234,7 +318,7 @@ class AnkiAutomataApp(ctk.CTk):
         self.us_ipa_label.pack(side="left", padx=5, pady=10)
 
         self.submit_frame = ctk.CTkFrame(self.right_frame, fg_color="transparent")
-        self.submit_frame.grid(row=7, column=0, sticky="ew", padx=20, pady=(0, 20))
+        self.submit_frame.grid(row=8, column=0, sticky="ew", padx=20, pady=(0, 20))
         
         saved_audio = engine.get_preference('audio_choice', 'uk')
         self.audio_choice = tk.StringVar(value=saved_audio)
@@ -249,6 +333,117 @@ class AnkiAutomataApp(ctk.CTk):
         
         self.word_entry.bind('<Return>', lambda event: self.search_word())
         self.word_entry.focus()
+
+    # --- Column Width Splitter Logic ---
+    def _on_w_splitter_hover(self, entering):
+        if not self._is_dragging_w_splitter:
+            color = ("#3b8ed0", "#1f538d") if entering else ("gray80", "gray28")
+            grip_color = ("#ffffff", "#dce4ee") if entering else ("gray55", "gray50")
+            self.v_splitter.configure(fg_color=color)
+            self.v_grip_indicator.configure(fg_color=grip_color)
+
+    def _on_w_splitter_press(self, event):
+        self._is_dragging_w_splitter = True
+        self._w_drag_start_x = event.x_root
+        curr_w = self.left_frame.winfo_width()
+        self._w_drag_start_val = curr_w if curr_w > 1 else self.user_pref_left_width
+        self.v_splitter.configure(fg_color=("#3b8ed0", "#1f538d"))
+
+    def _on_w_splitter_drag(self, event):
+        if not self._is_dragging_w_splitter: return
+        delta = event.x_root - self._w_drag_start_x
+        new_w = self._w_drag_start_val + delta
+        
+        min_w = 310
+        win_w = self.winfo_width()
+        max_w = max(min_w + 50, win_w - 450) if win_w > 800 else 600
+        
+        clamped_w = max(min_w, min(new_w, max_w))
+        self.user_pref_left_width = clamped_w
+        self.grid_columnconfigure(0, minsize=clamped_w)
+        self.update_idletasks()
+
+    def _on_w_splitter_release(self, event):
+        self._is_dragging_w_splitter = False
+        self.v_splitter.configure(fg_color=("gray80", "gray28"))
+        self.v_grip_indicator.configure(fg_color=("gray55", "gray50"))
+        engine.save_preference('user_left_width', int(self.user_pref_left_width))
+
+    # --- Height Splitter Logic ---
+    def _on_splitter_hover(self, entering):
+        if not self._is_dragging_splitter:
+            color = ("#3b8ed0", "#1f538d") if entering else ("gray80", "gray28")
+            grip_color = ("#ffffff", "#dce4ee") if entering else ("gray55", "gray50")
+            self.splitter.configure(fg_color=color)
+            self.grip_indicator.configure(fg_color=grip_color)
+
+    def _on_splitter_press(self, event):
+        self._is_dragging_splitter = True
+        self._drag_start_y = event.y_root
+        h = self.def_area.winfo_height()
+        self._drag_start_h = h if h > 1 else self.def_area.cget("height")
+        self.splitter.configure(fg_color=("#3b8ed0", "#1f538d"))
+
+    def _on_splitter_drag(self, event):
+        if not self._is_dragging_splitter: return
+        delta = event.y_root - self._drag_start_y
+        new_h = self._drag_start_h + delta
+        
+        min_h = 55
+        rf_h = self.right_frame.winfo_height()
+        max_h = max(min_h + 40, rf_h - 260) if rf_h > 350 else 400
+        
+        clamped_h = max(min_h, min(new_h, max_h))
+        self.def_area.configure(height=clamped_h)
+        self.user_pref_def_height = clamped_h
+
+    def _on_splitter_release(self, event):
+        self._is_dragging_splitter = False
+        self.splitter.configure(fg_color=("gray80", "gray28"))
+        self.grip_indicator.configure(fg_color=("gray55", "gray50"))
+        engine.save_preference('user_def_height', int(self.user_pref_def_height))
+
+    def adjust_def_area_height(self):
+        self.update_idletasks()
+        text = self.def_area.get("1.0", "end-1c").strip()
+        if not text:
+            self.def_area.configure(height=self.user_pref_def_height)
+            return
+
+        try:
+            cnt = self.def_area._textbox.count("1.0", "end-1c", "displaylines")
+            disp_lines = cnt[0] if cnt else len(text.splitlines())
+        except Exception:
+            disp_lines = len(text.splitlines())
+
+        num_lines = max(disp_lines, len(text.splitlines()))
+        font_size = self.fonts["editor"].cget("size")
+        line_height = int(font_size * 1.55)
+        needed_height = (num_lines * line_height) + 26
+        min_height = 65
+
+        if needed_height < self.user_pref_def_height:
+            final_height = max(min_height, needed_height)
+        else:
+            final_height = self.user_pref_def_height
+
+        self.def_area.configure(height=final_height)
+
+    def on_closing(self, event=None):
+        try:
+            w = self.winfo_width()
+            h = self.winfo_height()
+            if w >= 400 and h >= 300:
+                engine.save_preferences({
+                    'window_width': w, 
+                    'window_height': h,
+                    'user_def_height': int(self.user_pref_def_height),
+                    'user_left_width': int(self.user_pref_left_width)
+                })
+        except Exception as e:
+            print(f"Error saving window preferences: {e}")
+        self.destroy()
+        return "break"
 
     def _setup_fonts(self):
         self.base_font_sizes = {
@@ -293,12 +488,12 @@ class AnkiAutomataApp(ctk.CTk):
             new_sz = max(9, int(round(base_sz * scale)))
             self.fonts[name].configure(size=new_sz)
 
-        # Explicit configuration update for multiline text boxes to trigger redraw
         if hasattr(self, 'def_area'):
             self.def_area.configure(font=self.fonts["editor"])
             self.ex_area.configure(font=self.fonts["editor"])
             self.sentence_text.configure(font=self.fonts["body"])
             self.log_area.configure(font=self.fonts["log"])
+            self.adjust_def_area_height()
 
         engine.save_preference('font_scale', choice)
 
@@ -308,15 +503,15 @@ class AnkiAutomataApp(ctk.CTk):
         if not self.current_scraped_data:
             return
         
-        senses = self.current_scraped_data.get('senses', [])
-        if len(senses) > 1:
+        groups = self.current_scraped_data.get('groups', [])
+        if len(groups) > 1:
             if val:
                 self.sense_var.set("📚 All Meanings & Examples")
-                self.apply_sense("all")
+                self.apply_group("all")
             else:
-                first_label = self.format_sense_label(0, senses[0])
+                first_label = self.format_group_label(0, groups[0])
                 self.sense_var.set(first_label)
-                self.apply_sense(0)
+                self.apply_group(0)
 
     def on_audio_choice_changed(self):
         engine.save_preference('audio_choice', self.audio_choice.get())
@@ -387,25 +582,26 @@ class AnkiAutomataApp(ctk.CTk):
         self.sense_menu.configure(values=["Select meaning..."], state="disabled")
         self.sense_var.set("Select meaning...")
         self.all_ex_btn.configure(state="disabled")
+        self.adjust_def_area_height()
 
-    def format_sense_label(self, idx, sense):
+    def format_group_label(self, idx, grp):
         tags = []
-        if sense.get('pos'):
-            tags.append(sense['pos'])
-        if sense.get('guideword'):
-            gw = sense['guideword'].strip('() ')
-            tags.append(gw)
+        if grp.get('pos'):
+            tags.append(grp['pos'])
+        if grp.get('guideword'):
+            tags.append(grp['guideword'])
         tag_str = f"[{', '.join(tags)}] " if tags else ""
         
-        defn = sense.get('definition', '')
-        preview = defn[:45] + ("..." if len(defn) > 45 else "")
-        return f"{idx + 1}. {tag_str}{preview}"
+        first_def = grp['definitions'][0] if grp['definitions'] else ""
+        count_str = f" ({len(grp['definitions'])} defs)" if len(grp['definitions']) > 1 else ""
+        preview = first_def[:40] + ("..." if len(first_def) > 40 else "")
+        return f"{idx + 1}. {tag_str}{preview}{count_str}"
 
     def populate_editor(self, data, word):
         self.word_header.configure(text=word.capitalize())
-        senses = data.get('senses', [])
+        groups = data.get('groups', [])
         
-        if not senses:
+        if not groups:
             self.def_area.delete("0.0", tk.END)
             self.def_area.insert("0.0", data.get('definition', 'No definition found.'))
             self.ex_area.delete("0.0", tk.END)
@@ -414,68 +610,86 @@ class AnkiAutomataApp(ctk.CTk):
             self.sense_menu.configure(values=["Default Definition"], state="disabled")
             self.sense_var.set("Default Definition")
             self.all_ex_btn.configure(state="normal")
+            self.adjust_def_area_height()
             return
 
         menu_items = []
-        for i, s in enumerate(senses):
-            menu_items.append(self.format_sense_label(i, s))
+        for i, grp in enumerate(groups):
+            menu_items.append(self.format_group_label(i, grp))
             
-        if len(senses) > 1:
+        if len(groups) > 1:
             menu_items.append("📚 All Meanings & Examples")
 
         self.sense_menu.configure(values=menu_items, state="normal")
         self.all_ex_btn.configure(state="normal")
         
-        # Respect user preference: Auto-combine vs First Meaning
-        if self.auto_all_meanings_var.get() and len(senses) > 1:
+        if self.auto_all_meanings_var.get() and len(groups) > 1:
             self.sense_var.set("📚 All Meanings & Examples")
-            self.apply_sense("all")
+            self.apply_group("all")
         else:
             self.sense_var.set(menu_items[0])
-            self.apply_sense(0)
+            self.apply_group(0)
 
-    def apply_sense(self, sense_choice):
+    def apply_group(self, group_choice):
         if not self.current_scraped_data: return
-        senses = self.current_scraped_data.get('senses', [])
+        groups = self.current_scraped_data.get('groups', [])
         
-        if sense_choice == "all":
-            def_lines = []
-            for i, s in enumerate(senses):
-                tag = f"[{s['pos']}] " if s.get('pos') else ""
-                gw = f"({s['guideword'].strip('() ')}) " if s.get('guideword') else ""
-                def_lines.append(f"{i + 1}. {tag}{gw}{s['definition']}")
+        if group_choice == "all":
+            group_blocks = []
+            for i, grp in enumerate(groups):
+                tag = f"[{grp['pos']}] " if grp.get('pos') else ""
+                gw = f"({grp['guideword']}) " if grp.get('guideword') else ""
+                
+                if len(grp['definitions']) == 1:
+                    group_blocks.append(f"{i + 1}. {tag}{gw}{grp['definitions'][0]}")
+                else:
+                    header = f"{i + 1}. {tag}{gw}"
+                    sub_defs = [f"   {chr(ord('a') + j)}. {d}" for j, d in enumerate(grp['definitions'])]
+                    group_blocks.append(header + "\n" + "\n".join(sub_defs))
             
             self.def_area.delete("0.0", tk.END)
-            self.def_area.insert("0.0", "\n\n".join(def_lines))
+            self.def_area.insert("0.0", "\n\n".join(group_blocks))
             
             all_ex = self.current_scraped_data.get('examples_raw', [])
             self.ex_area.delete("0.0", tk.END)
             if all_ex:
                 self.ex_area.insert("0.0", "\n".join([f"• {ex}" for ex in all_ex]))
         else:
-            idx = int(sense_choice)
-            if 0 <= idx < len(senses):
-                s = senses[idx]
-                self.def_area.delete("0.0", tk.END)
-                self.def_area.insert("0.0", s['definition'])
+            idx = int(group_choice)
+            if 0 <= idx < len(groups):
+                grp = groups[idx]
+                tag = f"[{grp['pos']}] " if grp.get('pos') else ""
+                gw = f"({grp['guideword']}) " if grp.get('guideword') else ""
                 
-                ex_list = s.get('examples', [])
+                if len(grp['definitions']) == 1:
+                    text = f"{tag}{gw}{grp['definitions'][0]}"
+                else:
+                    header = f"{tag}{gw}"
+                    sub_defs = [f"   {chr(ord('a') + j)}. {d}" for j, d in enumerate(grp['definitions'])]
+                    text = header + "\n" + "\n".join(sub_defs)
+                
+                self.def_area.delete("0.0", tk.END)
+                self.def_area.insert("0.0", text)
+                
+                ex_list = grp.get('examples', [])
                 if not ex_list:
                     ex_list = self.current_scraped_data.get('examples_raw', [])
                     
                 self.ex_area.delete("0.0", tk.END)
                 if ex_list:
                     self.ex_area.insert("0.0", "\n".join([f"• {ex}" for ex in ex_list]))
+                    
+        self.adjust_def_area_height()
 
     def on_sense_changed(self, choice):
         if choice == "📚 All Meanings & Examples":
-            self.apply_sense("all")
+            self.apply_group("all")
         else:
             try:
                 idx = int(choice.split(".")[0]) - 1
-                self.apply_sense(idx)
+                self.apply_group(idx)
             except Exception:
-                self.apply_sense(0)
+                self.apply_group(0)
 
     def load_all_examples(self):
         if not self.current_scraped_data: return
@@ -551,8 +765,8 @@ class AnkiAutomataApp(ctk.CTk):
         
         self.populate_editor(data, word)
         self.add_btn.configure(state="normal")
-        count = len(data.get('senses', []))
-        self.log(f"Found {count} meaning{'s' if count != 1 else ''}. Select meaning, edit if needed, then Confirm.")
+        count = len(data.get('groups', []))
+        self.log(f"Found {count} meaning group{'s' if count != 1 else ''}. Select meaning, edit if needed, then Confirm.")
 
     def confirm_and_add(self):
         if not self.current_scraped_data: return
@@ -569,7 +783,6 @@ class AnkiAutomataApp(ctk.CTk):
         edited_definition = self.def_area.get("1.0", tk.END).strip()
         edited_examples = self.ex_area.get("1.0", tk.END).strip()
         separator = engine.config['templates']['example_separator']
-        edited_examples_html = edited_examples.replace('\n', separator)
         
         self.log("Building Anki note...")
         self.update()
@@ -586,13 +799,26 @@ class AnkiAutomataApp(ctk.CTk):
                 self.log(f"[!] Audio save error: {e}")
         
         bolded_definition = engine.bold_word(word, edited_definition)
-        bolded_examples = engine.bold_word(word, edited_examples_html)
+        bolded_examples = engine.bold_word(word, edited_examples)
+        
+        def_lines = bolded_definition.replace('\r\n', '\n').split('\n')
+        html_def_lines = []
+        for line in def_lines:
+            m = re.match(r'^( +)', line)
+            if m:
+                indent = '&nbsp;' * (len(m.group(1)) * 2)
+                html_def_lines.append(indent + line[len(m.group(1)):])
+            else:
+                html_def_lines.append(line)
+        bolded_definition_html = '<br>'.join(html_def_lines)
+        
+        bolded_examples_html = bolded_examples.replace('\r\n', '\n').replace('\n', separator)
         
         front_html = engine.config['templates']['front'].format(word=word)
         highlighted_sentence = engine.format_sentence(word, sentence)
         back_html = engine.config['templates']['back_layout'].format(
-            definition=bolded_definition, 
-            examples=bolded_examples
+            definition=bolded_definition_html, 
+            examples=bolded_examples_html
         )
         
         note = {

@@ -33,6 +33,17 @@ def save_preference(key, value):
     except Exception as e:
         print(f"Error writing preference to {CONFIG_FILE}: {e}")
 
+def save_preferences(pref_dict):
+    global config
+    if 'preferences' not in config:
+        config['preferences'] = {}
+    config['preferences'].update(pref_dict)
+    try:
+        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=4)
+    except Exception as e:
+        print(f"Error writing preferences to {CONFIG_FILE}: {e}")
+
 def invoke_anki(action, **params):
     payload = {'action': action, 'version': 6, 'params': params}
     response = requests.post(config['anki']['url'], json=payload).json()
@@ -64,6 +75,44 @@ def bold_word(word, text):
         return ""
     return re.sub(rf"(?i)({re.escape(word)})", r"<b>\g<0></b>", text)
 
+def group_senses(senses):
+    """Groups senses that share the same Part of Speech and Guideword."""
+    if not senses:
+        return []
+
+    groups = []
+    group_map = {}
+
+    for s in senses:
+        pos = s.get('pos', '').strip()
+        gw = s.get('guideword', '').strip()
+
+        # If a guideword exists, group by (POS, Guideword)
+        if gw:
+            key = (pos.lower(), gw.upper())
+        else:
+            # Standalone sense without guideword
+            key = ("__nogw__", len(groups))
+
+        if key in group_map:
+            grp = group_map[key]
+            if s['definition'] not in grp['definitions']:
+                grp['definitions'].append(s['definition'])
+            for ex in s.get('examples', []):
+                if ex not in grp['examples']:
+                    grp['examples'].append(ex)
+        else:
+            new_grp = {
+                "pos": pos,
+                "guideword": gw,
+                "definitions": [s['definition']],
+                "examples": list(s.get('examples', []))
+            }
+            group_map[key] = new_grp
+            groups.append(new_grp)
+
+    return groups
+
 def scrape_cambridge(word, manual_url=None):
     headers = {"User-Agent": config['scraper']['user_agent']}
     
@@ -87,10 +136,11 @@ def scrape_cambridge(word, manual_url=None):
 
     senses = []
     all_examples = []
+    seen_definitions = set()
 
     for entry in entries:
-        pos_element = entry.select_one('.pos-header .pos.dpos, .pos.dpos')
-        pos = pos_element.text.strip() if pos_element else ""
+        entry_pos_el = entry.select_one('.pos-header .pos.dpos, .pos.dpos')
+        default_pos = entry_pos_el.text.strip() if entry_pos_el else ""
 
         def_blocks = entry.select('.def-block.ddef_block')
         if not def_blocks:
@@ -102,13 +152,28 @@ def scrape_cambridge(word, manual_url=None):
                 continue
 
             def_text = def_element.text.strip().rstrip(' :').strip()
+            if not def_text:
+                continue
+
+            # Deduplicate repeated identical definitions across secondary dictionaries
+            norm_key = re.sub(r'\s+', ' ', def_text.lower())
+            if norm_key in seen_definitions:
+                continue
+            seen_definitions.add(norm_key)
 
             guideword = ""
             parent_sense = block.find_parent(class_='dsense')
+            pos = default_pos
+
             if parent_sense:
-                gw_element = parent_sense.select_one('.guideword, .dsense_h')
+                sense_pos_el = parent_sense.select_one('.pos.dpos')
+                if sense_pos_el:
+                    pos = sense_pos_el.text.strip()
+
+                gw_element = parent_sense.select_one('.guideword, .dsense_gw')
                 if gw_element:
-                    guideword = gw_element.text.strip()
+                    raw_gw = gw_element.get_text().strip()
+                    guideword = re.sub(r'^[(\s]+|[)\s]+$', '', raw_gw).strip()
 
             example_elements = block.select('.eg.deg')
             block_examples = [ex.text.strip() for ex in example_elements if ex.text.strip()]
@@ -128,12 +193,15 @@ def scrape_cambridge(word, manual_url=None):
         fallback_defs = soup.select('.def.ddef_d')
         fallback_examples = [ex.text.strip() for ex in soup.select('.eg.deg') if ex.text.strip()]
         for d in fallback_defs:
-            senses.append({
-                "pos": "",
-                "guideword": "",
-                "definition": d.text.strip().rstrip(' :').strip(),
-                "examples": fallback_examples
-            })
+            d_text = d.text.strip().rstrip(' :').strip()
+            if d_text and d_text.lower() not in seen_definitions:
+                seen_definitions.add(d_text.lower())
+                senses.append({
+                    "pos": "",
+                    "guideword": "",
+                    "definition": d_text,
+                    "examples": fallback_examples
+                })
         all_examples = fallback_examples
 
     if not senses:
@@ -150,9 +218,12 @@ def scrape_cambridge(word, manual_url=None):
     uk_audio = "https://dictionary.cambridge.org" + uk_audio_source['src'] if (uk_audio_source and 'src' in uk_audio_source.attrs) else None
     us_audio = "https://dictionary.cambridge.org" + us_audio_source['src'] if (us_audio_source and 'src' in us_audio_source.attrs) else None
 
+    groups = group_senses(senses)
+
     return {
         "word": word,
         "senses": senses,
+        "groups": groups,
         "definition": senses[0]["definition"] if senses else "No definition found.",
         "examples_raw": all_examples,
         "uk_ipa": uk_ipa,

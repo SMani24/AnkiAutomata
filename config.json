@@ -21,7 +21,11 @@
     },
     "preferences": {
         "auto_all_meanings": true,
-        "selected_deck": "University::ML",
-        "font_scale": "XL (145%)"
+        "selected_deck": "IELTS",
+        "font_scale": "XL (145%)",
+        "window_width": 1651,
+        "window_height": 772,
+        "user_def_height": 186,
+        "user_left_width": 388
     }
 }
