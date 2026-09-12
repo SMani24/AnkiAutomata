@@ -15,10 +15,10 @@ ctk.set_appearance_mode("System")
 ctk.set_default_color_theme("blue")
 
 class DeckSelectionDialog(ctk.CTkToplevel):
-    def __init__(self, parent, decks, current_deck):
+    def __init__(self, parent, decks, current_deck, font=None):
         super().__init__(parent)
         self.title("Select Anki Deck")
-        self.geometry("400x500")
+        self.geometry("420x520")
         self.selected_deck = current_deck
         
         self.transient(parent)
@@ -38,7 +38,7 @@ class DeckSelectionDialog(ctk.CTkToplevel):
             
         style.theme_use("default")
         style.configure("Treeview", background=bg_color, foreground=text_color, 
-                        fieldbackground=bg_color, borderwidth=0, rowheight=25)
+                        fieldbackground=bg_color, borderwidth=0, rowheight=26)
         style.map('Treeview', background=[('selected', sel_bg)])
 
         self.tree = ttk.Treeview(self, show="tree", selectmode="browse")
@@ -49,8 +49,8 @@ class DeckSelectionDialog(ctk.CTkToplevel):
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
         btn_frame.pack(fill="x", padx=15, pady=15)
         
-        ctk.CTkButton(btn_frame, text="Select", command=self.confirm).pack(side="right", padx=(10, 0))
-        ctk.CTkButton(btn_frame, text="Cancel", command=self.destroy, fg_color="transparent", border_width=1).pack(side="right")
+        ctk.CTkButton(btn_frame, text="Select", command=self.confirm, font=font).pack(side="right", padx=(10, 0))
+        ctk.CTkButton(btn_frame, text="Cancel", command=self.destroy, fg_color="transparent", border_width=1, font=font).pack(side="right")
 
     def populate_tree(self, decks):
         decks.sort()
@@ -80,10 +80,12 @@ class AnkiAutomataApp(ctk.CTk):
         super().__init__()
             
         self.title("AnkiAutomata")
-        self.geometry("1000x680")
-        self.minsize(900, 550)
+        self.geometry("1040x700")
+        self.minsize(940, 580)
         
         self.current_scraped_data = None
+        
+        self._setup_fonts()
         
         # Local IPC Server for shortcuts
         self.search_triggered = False
@@ -100,42 +102,60 @@ class AnkiAutomataApp(ctk.CTk):
         self.left_frame.grid(row=0, column=0, sticky="nsew", padx=(20, 10), pady=20)
         self.left_frame.grid_rowconfigure(2, weight=1) 
         
-        self.header = ctk.CTkLabel(self.left_frame, text="AnkiAutomata ⚙️", font=ctk.CTkFont(size=24, weight="bold"))
-        self.header.grid(row=0, column=0, pady=(0, 20), sticky="w")
+        # Header Row with App Title and Text Scale Dropdown
+        self.header_frame = ctk.CTkFrame(self.left_frame, fg_color="transparent")
+        self.header_frame.grid(row=0, column=0, pady=(0, 15), sticky="ew")
+        
+        self.header = ctk.CTkLabel(self.header_frame, text="AnkiAutomata ⚙️", font=self.fonts["title"])
+        self.header.pack(side="left")
+        
+        scale_container = ctk.CTkFrame(self.header_frame, fg_color="transparent")
+        scale_container.pack(side="right")
+        
+        ctk.CTkLabel(scale_container, text="Text Size:", font=self.fonts["small"], text_color=("gray40", "gray70")).pack(side="left", padx=(0, 6))
+        self.scale_menu = ctk.CTkOptionMenu(
+            scale_container,
+            values=list(self.font_scale_factors.keys()),
+            command=self.on_font_scale_changed,
+            font=self.fonts["small"],
+            width=125,
+            height=28
+        )
+        self.scale_menu.set(self.current_scale_choice)
+        self.scale_menu.pack(side="left")
         
         self.input_card = ctk.CTkFrame(self.left_frame, corner_radius=15)
         self.input_card.grid(row=1, column=0, sticky="ew")
         self.input_card.grid_columnconfigure(1, weight=1)
         
-        label_font = ctk.CTkFont(size=13, weight="bold")
-        
-        ctk.CTkLabel(self.input_card, text="🗂️ Deck:", font=label_font, text_color=("gray30", "gray70")).grid(row=0, column=0, padx=15, pady=(20, 10), sticky="w")
+        ctk.CTkLabel(self.input_card, text="🗂️ Deck:", font=self.fonts["label"], text_color=("gray30", "gray70")).grid(row=0, column=0, padx=15, pady=(20, 10), sticky="w")
         deck_inner = ctk.CTkFrame(self.input_card, fg_color="transparent")
         deck_inner.grid(row=0, column=1, padx=(0, 15), pady=(20, 10), sticky="ew")
         deck_inner.grid_columnconfigure(0, weight=1)
         
-        self.deck_var = tk.StringVar(value=engine.config['anki']['default_deck'])
-        self.deck_display = ctk.CTkEntry(deck_inner, textvariable=self.deck_var, state="readonly")
+        saved_deck = engine.get_preference('selected_deck', engine.config['anki']['default_deck'])
+        self.deck_var = tk.StringVar(value=saved_deck)
+        self.deck_display = ctk.CTkEntry(deck_inner, textvariable=self.deck_var, font=self.fonts["body"], state="readonly")
         self.deck_display.grid(row=0, column=0, sticky="ew", padx=(0, 5))
         
-        self.deck_btn = ctk.CTkButton(deck_inner, text="Change", width=60, command=self.change_deck, fg_color="transparent", border_width=1, text_color=("gray10", "gray90"))
+        self.deck_btn = ctk.CTkButton(deck_inner, text="Change", width=60, command=self.change_deck, font=self.fonts["btn"], fg_color="transparent", border_width=1, text_color=("gray10", "gray90"))
         self.deck_btn.grid(row=0, column=1)
         
-        ctk.CTkLabel(self.input_card, text="🎯 Word:", font=label_font, text_color=("gray30", "gray70")).grid(row=1, column=0, padx=15, pady=10, sticky="w")
+        ctk.CTkLabel(self.input_card, text="🎯 Word:", font=self.fonts["label"], text_color=("gray30", "gray70")).grid(row=1, column=0, padx=15, pady=10, sticky="w")
         word_inner = ctk.CTkFrame(self.input_card, fg_color="transparent")
         word_inner.grid(row=1, column=1, padx=(0, 15), pady=10, sticky="ew")
         word_inner.grid_columnconfigure(0, weight=1)
         
         self.word_var = tk.StringVar()
-        self.word_entry = ctk.CTkEntry(word_inner, textvariable=self.word_var, placeholder_text="Type to search...")
+        self.word_entry = ctk.CTkEntry(word_inner, textvariable=self.word_var, font=self.fonts["body"], placeholder_text="Type to search...")
         self.word_entry.grid(row=0, column=0, sticky="ew", padx=(0, 5))
-        ctk.CTkButton(word_inner, text="🔍", width=40, command=self.search_word).grid(row=0, column=1)
+        ctk.CTkButton(word_inner, text="🔍", width=40, font=self.fonts["btn"], command=self.search_word).grid(row=0, column=1)
         
-        ctk.CTkLabel(self.input_card, text="📖 Sentence:", font=label_font, text_color=("gray30", "gray70")).grid(row=2, column=0, padx=15, pady=(10, 20), sticky="nw")
-        self.sentence_text = ctk.CTkTextbox(self.input_card, height=80, corner_radius=8)
+        ctk.CTkLabel(self.input_card, text="📖 Sentence:", font=self.fonts["label"], text_color=("gray30", "gray70")).grid(row=2, column=0, padx=15, pady=(10, 20), sticky="nw")
+        self.sentence_text = ctk.CTkTextbox(self.input_card, height=80, corner_radius=8, font=self.fonts["body"])
         self.sentence_text.grid(row=2, column=1, padx=(0, 15), pady=(10, 20), sticky="ew")
         
-        self.log_area = ctk.CTkTextbox(self.left_frame, height=90, font=ctk.CTkFont(family="Consolas", size=11), fg_color=("gray95", "gray10"))
+        self.log_area = ctk.CTkTextbox(self.left_frame, height=90, font=self.fonts["log"], fg_color=("gray95", "gray10"))
         self.log_area.grid(row=3, column=0, sticky="esw", pady=(20, 0))
         self.log_area.insert("0.0", "System ready. Highlight text and press Ctrl+Alt+W.\n")
         self.log_area.configure(state="disabled")
@@ -146,37 +166,49 @@ class AnkiAutomataApp(ctk.CTk):
         self.right_frame.grid_columnconfigure(0, weight=1)
         self.right_frame.grid_rowconfigure(5, weight=1)
         
-        self.word_header = ctk.CTkLabel(self.right_frame, text="Dictionary Editor", font=ctk.CTkFont(size=22, weight="bold"))
+        self.word_header = ctk.CTkLabel(self.right_frame, text="Dictionary Editor", font=self.fonts["section"])
         self.word_header.grid(row=0, column=0, padx=20, pady=(15, 5), sticky="w")
         
-        # Sense / Meaning Selector
+        # Meaning Selector and "Auto-combine All Meanings" Switch
         self.sense_frame = ctk.CTkFrame(self.right_frame, fg_color="transparent")
         self.sense_frame.grid(row=1, column=0, sticky="ew", padx=20, pady=(0, 5))
-        ctk.CTkLabel(self.sense_frame, text="Select Meaning:", font=label_font, text_color=("gray30", "gray70")).pack(side="left", padx=(0, 10))
+        
+        ctk.CTkLabel(self.sense_frame, text="Meaning:", font=self.fonts["label"], text_color=("gray30", "gray70")).pack(side="left", padx=(0, 8))
         
         self.sense_var = tk.StringVar(value="Select meaning...")
         self.sense_menu = ctk.CTkOptionMenu(self.sense_frame, variable=self.sense_var, values=["Select meaning..."], 
-                                            command=self.on_sense_changed, state="disabled")
-        self.sense_menu.pack(side="left", fill="x", expand=True)
+                                            command=self.on_sense_changed, font=self.fonts["small"], state="disabled")
+        self.sense_menu.pack(side="left", fill="x", expand=True, padx=(0, 12))
 
-        self.def_label = ctk.CTkLabel(self.right_frame, text="Meaning (Editable):", font=label_font, text_color=("gray30", "gray70"))
+        saved_auto_all = engine.get_preference('auto_all_meanings', False)
+        self.auto_all_meanings_var = tk.BooleanVar(value=saved_auto_all)
+        self.auto_all_switch = ctk.CTkSwitch(
+            self.sense_frame,
+            text="Auto-combine All",
+            variable=self.auto_all_meanings_var,
+            command=self.on_toggle_auto_all,
+            font=self.fonts["small"]
+        )
+        self.auto_all_switch.pack(side="right")
+
+        self.def_label = ctk.CTkLabel(self.right_frame, text="Definition (Editable):", font=self.fonts["label"], text_color=("gray30", "gray70"))
         self.def_label.grid(row=2, column=0, padx=20, pady=(5, 5), sticky="w")
-        self.def_area = ctk.CTkTextbox(self.right_frame, font=ctk.CTkFont(size=15), fg_color=("gray95", "gray15"), wrap="word", height=75)
+        self.def_area = ctk.CTkTextbox(self.right_frame, font=self.fonts["editor"], fg_color=("gray95", "gray15"), wrap="word", height=75)
         self.def_area.grid(row=3, column=0, sticky="ew", padx=20, pady=(0, 10))
         
-        # Examples Header with "Show All Examples" shortcut
+        # Examples Toolbar
         self.ex_header_frame = ctk.CTkFrame(self.right_frame, fg_color="transparent")
         self.ex_header_frame.grid(row=4, column=0, padx=20, pady=(5, 5), sticky="ew")
         
-        self.ex_label = ctk.CTkLabel(self.ex_header_frame, text="Examples (Editable):", font=label_font, text_color=("gray30", "gray70"))
+        self.ex_label = ctk.CTkLabel(self.ex_header_frame, text="Examples (Editable):", font=self.fonts["label"], text_color=("gray30", "gray70"))
         self.ex_label.pack(side="left")
         
         self.all_ex_btn = ctk.CTkButton(self.ex_header_frame, text="Show All Examples", width=125, height=24, 
-                                        font=ctk.CTkFont(size=11), fg_color="transparent", border_width=1, 
+                                        font=self.fonts["small"], fg_color="transparent", border_width=1, 
                                         command=self.load_all_examples, state="disabled")
         self.all_ex_btn.pack(side="right")
         
-        self.ex_area = ctk.CTkTextbox(self.right_frame, font=ctk.CTkFont(size=15), fg_color=("gray95", "gray15"), wrap="word")
+        self.ex_area = ctk.CTkTextbox(self.right_frame, font=self.fonts["editor"], fg_color=("gray95", "gray15"), wrap="word")
         self.ex_area.grid(row=5, column=0, sticky="nsew", padx=20, pady=(0, 15))
         self.ex_area.bind('<Return>', self.auto_bullet)
         
@@ -189,31 +221,105 @@ class AnkiAutomataApp(ctk.CTk):
         
         self.uk_frame = ctk.CTkFrame(self.audio_frame, fg_color=("gray90", "gray20"))
         self.uk_frame.grid(row=0, column=0, sticky="ew", padx=(0, 5))
-        self.uk_btn = ctk.CTkButton(self.uk_frame, text="▶ UK Play", width=80, state="disabled", command=lambda: self.play_audio("uk"))
+        self.uk_btn = ctk.CTkButton(self.uk_frame, text="▶ UK Play", width=80, font=self.fonts["btn"], state="disabled", command=lambda: self.play_audio("uk"))
         self.uk_btn.pack(side="left", padx=10, pady=10)
-        self.uk_ipa_label = ctk.CTkLabel(self.uk_frame, text="-", font=ctk.CTkFont(size=14))
+        self.uk_ipa_label = ctk.CTkLabel(self.uk_frame, text="-", font=self.fonts["body"])
         self.uk_ipa_label.pack(side="left", padx=5, pady=10)
         
         self.us_frame = ctk.CTkFrame(self.audio_frame, fg_color=("gray90", "gray20"))
         self.us_frame.grid(row=0, column=1, sticky="ew", padx=(5, 0))
-        self.us_btn = ctk.CTkButton(self.us_frame, text="▶ US Play", width=80, state="disabled", command=lambda: self.play_audio("us"))
+        self.us_btn = ctk.CTkButton(self.us_frame, text="▶ US Play", width=80, font=self.fonts["btn"], state="disabled", command=lambda: self.play_audio("us"))
         self.us_btn.pack(side="left", padx=10, pady=10)
-        self.us_ipa_label = ctk.CTkLabel(self.us_frame, text="-", font=ctk.CTkFont(size=14))
+        self.us_ipa_label = ctk.CTkLabel(self.us_frame, text="-", font=self.fonts["body"])
         self.us_ipa_label.pack(side="left", padx=5, pady=10)
 
         self.submit_frame = ctk.CTkFrame(self.right_frame, fg_color="transparent")
         self.submit_frame.grid(row=7, column=0, sticky="ew", padx=20, pady=(0, 20))
         
-        self.audio_choice = tk.StringVar(value="uk")
-        ctk.CTkRadioButton(self.submit_frame, text="Save UK to Anki", variable=self.audio_choice, value="uk").pack(side="left", padx=(0, 15))
-        ctk.CTkRadioButton(self.submit_frame, text="Save US to Anki", variable=self.audio_choice, value="us").pack(side="left")
+        saved_audio = engine.get_preference('audio_choice', 'uk')
+        self.audio_choice = tk.StringVar(value=saved_audio)
+        ctk.CTkRadioButton(self.submit_frame, text="Save UK to Anki", variable=self.audio_choice, 
+                           value="uk", font=self.fonts["body"], command=self.on_audio_choice_changed).pack(side="left", padx=(0, 15))
+        ctk.CTkRadioButton(self.submit_frame, text="Save US to Anki", variable=self.audio_choice, 
+                           value="us", font=self.fonts["body"], command=self.on_audio_choice_changed).pack(side="left")
         
         self.add_btn = ctk.CTkButton(self.submit_frame, text="➕ Confirm & Add to Anki", command=self.confirm_and_add, 
-                                     height=45, font=ctk.CTkFont(size=14, weight="bold"), state="disabled")
+                                     height=45, font=self.fonts["btn_large"], state="disabled")
         self.add_btn.pack(side="right", fill="x", expand=True, padx=(20, 0))
         
         self.word_entry.bind('<Return>', lambda event: self.search_word())
         self.word_entry.focus()
+
+    def _setup_fonts(self):
+        self.base_font_sizes = {
+            "title": 23,
+            "section": 20,
+            "label": 13,
+            "body": 13,
+            "editor": 15,
+            "btn": 13,
+            "btn_large": 14,
+            "log": 11,
+            "small": 11,
+        }
+
+        self.font_scale_factors = {
+            "Normal (100%)": 1.0,
+            "Medium (115%)": 1.15,
+            "Large (130%)": 1.30,
+            "XL (145%)": 1.45,
+        }
+
+        saved_scale = engine.get_preference('font_scale', 'Normal (100%)')
+        self.current_scale_choice = saved_scale if saved_scale in self.font_scale_factors else "Normal (100%)"
+        scale = self.font_scale_factors[self.current_scale_choice]
+
+        self.fonts = {
+            "title": ctk.CTkFont(size=int(round(self.base_font_sizes["title"] * scale)), weight="bold"),
+            "section": ctk.CTkFont(size=int(round(self.base_font_sizes["section"] * scale)), weight="bold"),
+            "label": ctk.CTkFont(size=int(round(self.base_font_sizes["label"] * scale)), weight="bold"),
+            "body": ctk.CTkFont(size=int(round(self.base_font_sizes["body"] * scale))),
+            "editor": ctk.CTkFont(size=int(round(self.base_font_sizes["editor"] * scale))),
+            "btn": ctk.CTkFont(size=int(round(self.base_font_sizes["btn"] * scale)), weight="bold"),
+            "btn_large": ctk.CTkFont(size=int(round(self.base_font_sizes["btn_large"] * scale)), weight="bold"),
+            "log": ctk.CTkFont(family="Consolas", size=int(round(self.base_font_sizes["log"] * scale))),
+            "small": ctk.CTkFont(size=int(round(self.base_font_sizes["small"] * scale))),
+        }
+
+    def on_font_scale_changed(self, choice: str):
+        self.current_scale_choice = choice
+        scale = self.font_scale_factors.get(choice, 1.0)
+        for name, base_sz in self.base_font_sizes.items():
+            new_sz = max(9, int(round(base_sz * scale)))
+            self.fonts[name].configure(size=new_sz)
+
+        # Explicit configuration update for multiline text boxes to trigger redraw
+        if hasattr(self, 'def_area'):
+            self.def_area.configure(font=self.fonts["editor"])
+            self.ex_area.configure(font=self.fonts["editor"])
+            self.sentence_text.configure(font=self.fonts["body"])
+            self.log_area.configure(font=self.fonts["log"])
+
+        engine.save_preference('font_scale', choice)
+
+    def on_toggle_auto_all(self):
+        val = self.auto_all_meanings_var.get()
+        engine.save_preference('auto_all_meanings', val)
+        if not self.current_scraped_data:
+            return
+        
+        senses = self.current_scraped_data.get('senses', [])
+        if len(senses) > 1:
+            if val:
+                self.sense_var.set("📚 All Meanings & Examples")
+                self.apply_sense("all")
+            else:
+                first_label = self.format_sense_label(0, senses[0])
+                self.sense_var.set(first_label)
+                self.apply_sense(0)
+
+    def on_audio_choice_changed(self):
+        engine.save_preference('audio_choice', self.audio_choice.get())
 
     def check_triggers(self):
         if self.search_triggered:
@@ -241,11 +347,12 @@ class AnkiAutomataApp(ctk.CTk):
         if current not in available_decks:
             available_decks.append(current)
             
-        dialog = DeckSelectionDialog(self, available_decks, current)
+        dialog = DeckSelectionDialog(self, available_decks, current, font=self.fonts["btn"])
         self.wait_window(dialog)
         
         if dialog.selected_deck:
             self.deck_var.set(dialog.selected_deck)
+            engine.save_preference('selected_deck', dialog.selected_deck)
 
     def auto_bullet(self, event):
         self.ex_area.insert("insert", "\n• ")
@@ -317,9 +424,15 @@ class AnkiAutomataApp(ctk.CTk):
             menu_items.append("📚 All Meanings & Examples")
 
         self.sense_menu.configure(values=menu_items, state="normal")
-        self.sense_var.set(menu_items[0])
         self.all_ex_btn.configure(state="normal")
-        self.apply_sense(0)
+        
+        # Respect user preference: Auto-combine vs First Meaning
+        if self.auto_all_meanings_var.get() and len(senses) > 1:
+            self.sense_var.set("📚 All Meanings & Examples")
+            self.apply_sense("all")
+        else:
+            self.sense_var.set(menu_items[0])
+            self.apply_sense(0)
 
     def apply_sense(self, sense_choice):
         if not self.current_scraped_data: return

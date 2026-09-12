@@ -5,12 +5,33 @@ from bs4 import BeautifulSoup
 
 CONFIG_FILE = 'config.json'
 
-try:
-    with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-        config = json.load(f)
-except FileNotFoundError:
-    print(f"Error: Could not find '{CONFIG_FILE}'. Please create it in the same directory.")
-    exit(1)
+def load_config():
+    global config
+    try:
+        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+            if 'preferences' not in config:
+                config['preferences'] = {}
+            return config
+    except FileNotFoundError:
+        print(f"Error: Could not find '{CONFIG_FILE}'. Please create it in the same directory.")
+        exit(1)
+
+config = load_config()
+
+def get_preference(key, default=None):
+    return config.get('preferences', {}).get(key, default)
+
+def save_preference(key, value):
+    global config
+    if 'preferences' not in config:
+        config['preferences'] = {}
+    config['preferences'][key] = value
+    try:
+        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=4)
+    except Exception as e:
+        print(f"Error writing preference to {CONFIG_FILE}: {e}")
 
 def invoke_anki(action, **params):
     payload = {'action': action, 'version': 6, 'params': params}
