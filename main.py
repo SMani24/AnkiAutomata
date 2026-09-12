@@ -80,18 +80,15 @@ class AnkiAutomataApp(ctk.CTk):
         super().__init__()
             
         self.title("AnkiAutomata")
-        self.geometry("1000x650")
-        self.minsize(900, 500)
+        self.geometry("1000x680")
+        self.minsize(900, 550)
         
         self.current_scraped_data = None
         
-        # --- Local IPC Server (The Bulletproof Shortcut Listener) ---
-        self.search_triggered = False  # Thread-safe flag
-        
+        # Local IPC Server for shortcuts
+        self.search_triggered = False
         self.server_thread = threading.Thread(target=self.start_local_server, daemon=True)
         self.server_thread.start()
-        
-        # Start the continuous UI checking loop
         self.check_triggers()
             
         self.grid_columnconfigure(0, weight=4) 
@@ -147,26 +144,46 @@ class AnkiAutomataApp(ctk.CTk):
         self.right_frame = ctk.CTkFrame(self, corner_radius=15)
         self.right_frame.grid(row=0, column=1, sticky="nsew", padx=(10, 20), pady=20)
         self.right_frame.grid_columnconfigure(0, weight=1)
-        self.right_frame.grid_rowconfigure(4, weight=1)
+        self.right_frame.grid_rowconfigure(5, weight=1)
         
         self.word_header = ctk.CTkLabel(self.right_frame, text="Dictionary Editor", font=ctk.CTkFont(size=22, weight="bold"))
         self.word_header.grid(row=0, column=0, padx=20, pady=(15, 5), sticky="w")
         
-        self.def_label = ctk.CTkLabel(self.right_frame, text="Meaning (Editable):", font=label_font, text_color=("gray30", "gray70"))
-        self.def_label.grid(row=1, column=0, padx=20, pady=(5, 5), sticky="w")
-        self.def_area = ctk.CTkTextbox(self.right_frame, font=ctk.CTkFont(size=16), fg_color=("gray95", "gray15"), wrap="word", height=80)
-        self.def_area.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 10))
+        # Sense / Meaning Selector
+        self.sense_frame = ctk.CTkFrame(self.right_frame, fg_color="transparent")
+        self.sense_frame.grid(row=1, column=0, sticky="ew", padx=20, pady=(0, 5))
+        ctk.CTkLabel(self.sense_frame, text="Select Meaning:", font=label_font, text_color=("gray30", "gray70")).pack(side="left", padx=(0, 10))
         
-        self.ex_label = ctk.CTkLabel(self.right_frame, text="Examples (Editable):", font=label_font, text_color=("gray30", "gray70"))
-        self.ex_label.grid(row=3, column=0, padx=20, pady=(5, 5), sticky="w")
-        self.ex_area = ctk.CTkTextbox(self.right_frame, font=ctk.CTkFont(size=16), fg_color=("gray95", "gray15"), wrap="word")
-        self.ex_area.grid(row=4, column=0, sticky="nsew", padx=20, pady=(0, 15))
+        self.sense_var = tk.StringVar(value="Select meaning...")
+        self.sense_menu = ctk.CTkOptionMenu(self.sense_frame, variable=self.sense_var, values=["Select meaning..."], 
+                                            command=self.on_sense_changed, state="disabled")
+        self.sense_menu.pack(side="left", fill="x", expand=True)
+
+        self.def_label = ctk.CTkLabel(self.right_frame, text="Meaning (Editable):", font=label_font, text_color=("gray30", "gray70"))
+        self.def_label.grid(row=2, column=0, padx=20, pady=(5, 5), sticky="w")
+        self.def_area = ctk.CTkTextbox(self.right_frame, font=ctk.CTkFont(size=15), fg_color=("gray95", "gray15"), wrap="word", height=75)
+        self.def_area.grid(row=3, column=0, sticky="ew", padx=20, pady=(0, 10))
+        
+        # Examples Header with "Show All Examples" shortcut
+        self.ex_header_frame = ctk.CTkFrame(self.right_frame, fg_color="transparent")
+        self.ex_header_frame.grid(row=4, column=0, padx=20, pady=(5, 5), sticky="ew")
+        
+        self.ex_label = ctk.CTkLabel(self.ex_header_frame, text="Examples (Editable):", font=label_font, text_color=("gray30", "gray70"))
+        self.ex_label.pack(side="left")
+        
+        self.all_ex_btn = ctk.CTkButton(self.ex_header_frame, text="Show All Examples", width=125, height=24, 
+                                        font=ctk.CTkFont(size=11), fg_color="transparent", border_width=1, 
+                                        command=self.load_all_examples, state="disabled")
+        self.all_ex_btn.pack(side="right")
+        
+        self.ex_area = ctk.CTkTextbox(self.right_frame, font=ctk.CTkFont(size=15), fg_color=("gray95", "gray15"), wrap="word")
+        self.ex_area.grid(row=5, column=0, sticky="nsew", padx=20, pady=(0, 15))
         self.ex_area.bind('<Return>', self.auto_bullet)
         
         self.reset_editor()
 
         self.audio_frame = ctk.CTkFrame(self.right_frame, fg_color="transparent")
-        self.audio_frame.grid(row=5, column=0, sticky="ew", padx=20, pady=(0, 15))
+        self.audio_frame.grid(row=6, column=0, sticky="ew", padx=20, pady=(0, 15))
         self.audio_frame.grid_columnconfigure(0, weight=1)
         self.audio_frame.grid_columnconfigure(1, weight=1)
         
@@ -185,7 +202,7 @@ class AnkiAutomataApp(ctk.CTk):
         self.us_ipa_label.pack(side="left", padx=5, pady=10)
 
         self.submit_frame = ctk.CTkFrame(self.right_frame, fg_color="transparent")
-        self.submit_frame.grid(row=6, column=0, sticky="ew", padx=20, pady=(0, 20))
+        self.submit_frame.grid(row=7, column=0, sticky="ew", padx=20, pady=(0, 20))
         
         self.audio_choice = tk.StringVar(value="uk")
         ctk.CTkRadioButton(self.submit_frame, text="Save UK to Anki", variable=self.audio_choice, value="uk").pack(side="left", padx=(0, 15))
@@ -199,15 +216,12 @@ class AnkiAutomataApp(ctk.CTk):
         self.word_entry.focus()
 
     def check_triggers(self):
-        """Runs continuously in the main UI thread to safely check for background pings."""
         if self.search_triggered:
             self.search_triggered = False
             self.process_clipboard()
-            
         self.after(200, self.check_triggers)
 
     def start_local_server(self):
-        """Runs a tiny local server to listen for the OS shortcut curl command."""
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
@@ -217,7 +231,6 @@ class AnkiAutomataApp(ctk.CTk):
                 conn, addr = server.accept()
                 conn.sendall(b"HTTP/1.1 200 OK\r\n\r\nSuccess")
                 conn.close()
-                # Safely tell the UI thread to run the search
                 self.search_triggered = True
         except Exception as e:
             print(f"Local server error: {e}")
@@ -264,16 +277,99 @@ class AnkiAutomataApp(ctk.CTk):
         self.def_area.delete("0.0", tk.END)
         self.def_area.insert("0.0", message)
         self.ex_area.delete("0.0", tk.END)
+        self.sense_menu.configure(values=["Select meaning..."], state="disabled")
+        self.sense_var.set("Select meaning...")
+        self.all_ex_btn.configure(state="disabled")
+
+    def format_sense_label(self, idx, sense):
+        tags = []
+        if sense.get('pos'):
+            tags.append(sense['pos'])
+        if sense.get('guideword'):
+            gw = sense['guideword'].strip('() ')
+            tags.append(gw)
+        tag_str = f"[{', '.join(tags)}] " if tags else ""
+        
+        defn = sense.get('definition', '')
+        preview = defn[:45] + ("..." if len(defn) > 45 else "")
+        return f"{idx + 1}. {tag_str}{preview}"
 
     def populate_editor(self, data, word):
         self.word_header.configure(text=word.capitalize())
-        self.def_area.delete("0.0", tk.END)
-        self.def_area.insert("0.0", data['definition'])
-        self.ex_area.delete("0.0", tk.END)
+        senses = data.get('senses', [])
         
-        if data['examples_raw']:
-            examples_text = "\n".join([f"• {ex}" for ex in data['examples_raw']])
-            self.ex_area.insert("0.0", examples_text)
+        if not senses:
+            self.def_area.delete("0.0", tk.END)
+            self.def_area.insert("0.0", data.get('definition', 'No definition found.'))
+            self.ex_area.delete("0.0", tk.END)
+            if data.get('examples_raw'):
+                self.ex_area.insert("0.0", "\n".join([f"• {ex}" for ex in data['examples_raw']]))
+            self.sense_menu.configure(values=["Default Definition"], state="disabled")
+            self.sense_var.set("Default Definition")
+            self.all_ex_btn.configure(state="normal")
+            return
+
+        menu_items = []
+        for i, s in enumerate(senses):
+            menu_items.append(self.format_sense_label(i, s))
+            
+        if len(senses) > 1:
+            menu_items.append("📚 All Meanings & Examples")
+
+        self.sense_menu.configure(values=menu_items, state="normal")
+        self.sense_var.set(menu_items[0])
+        self.all_ex_btn.configure(state="normal")
+        self.apply_sense(0)
+
+    def apply_sense(self, sense_choice):
+        if not self.current_scraped_data: return
+        senses = self.current_scraped_data.get('senses', [])
+        
+        if sense_choice == "all":
+            def_lines = []
+            for i, s in enumerate(senses):
+                tag = f"[{s['pos']}] " if s.get('pos') else ""
+                gw = f"({s['guideword'].strip('() ')}) " if s.get('guideword') else ""
+                def_lines.append(f"{i + 1}. {tag}{gw}{s['definition']}")
+            
+            self.def_area.delete("0.0", tk.END)
+            self.def_area.insert("0.0", "\n\n".join(def_lines))
+            
+            all_ex = self.current_scraped_data.get('examples_raw', [])
+            self.ex_area.delete("0.0", tk.END)
+            if all_ex:
+                self.ex_area.insert("0.0", "\n".join([f"• {ex}" for ex in all_ex]))
+        else:
+            idx = int(sense_choice)
+            if 0 <= idx < len(senses):
+                s = senses[idx]
+                self.def_area.delete("0.0", tk.END)
+                self.def_area.insert("0.0", s['definition'])
+                
+                ex_list = s.get('examples', [])
+                if not ex_list:
+                    ex_list = self.current_scraped_data.get('examples_raw', [])
+                    
+                self.ex_area.delete("0.0", tk.END)
+                if ex_list:
+                    self.ex_area.insert("0.0", "\n".join([f"• {ex}" for ex in ex_list]))
+
+    def on_sense_changed(self, choice):
+        if choice == "📚 All Meanings & Examples":
+            self.apply_sense("all")
+        else:
+            try:
+                idx = int(choice.split(".")[0]) - 1
+                self.apply_sense(idx)
+            except Exception:
+                self.apply_sense(0)
+
+    def load_all_examples(self):
+        if not self.current_scraped_data: return
+        all_ex = self.current_scraped_data.get('examples_raw', [])
+        if all_ex:
+            self.ex_area.delete("0.0", tk.END)
+            self.ex_area.insert("0.0", "\n".join([f"• {ex}" for ex in all_ex]))
 
     def reset_audio_ui(self):
         self.uk_btn.configure(state="disabled")
@@ -285,7 +381,6 @@ class AnkiAutomataApp(ctk.CTk):
         clipboard_text = pyperclip.paste().strip()
         if not clipboard_text: return
         
-        # Bring window to front
         self.deiconify()
         self.lift()
         self.attributes('-topmost', True)
@@ -343,7 +438,8 @@ class AnkiAutomataApp(ctk.CTk):
         
         self.populate_editor(data, word)
         self.add_btn.configure(state="normal")
-        self.log("Definition found. Edit if needed, then Confirm.")
+        count = len(data.get('senses', []))
+        self.log(f"Found {count} meaning{'s' if count != 1 else ''}. Select meaning, edit if needed, then Confirm.")
 
     def confirm_and_add(self):
         if not self.current_scraped_data: return

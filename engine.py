@@ -57,35 +57,86 @@ def scrape_cambridge(word, manual_url=None):
         return None
 
     soup = BeautifulSoup(response.text, 'html.parser')
-    primary_entry = soup.select_one('.pr.entry-body__el')
-    
-    if not primary_entry:
+    entries = soup.select('.pr.entry-body__el')
+    if not entries:
+        entries = soup.select('.entry-body__el')
+        
+    if not entries:
         return None
 
-    def_element = primary_entry.select_one('.def.ddef_d')
-    example_elements = primary_entry.select('.eg.deg')
+    senses = []
+    all_examples = []
+
+    for entry in entries:
+        pos_element = entry.select_one('.pos-header .pos.dpos, .pos.dpos')
+        pos = pos_element.text.strip() if pos_element else ""
+
+        def_blocks = entry.select('.def-block.ddef_block')
+        if not def_blocks:
+            def_blocks = entry.select('.ddef_block')
+
+        for block in def_blocks:
+            def_element = block.select_one('.def.ddef_d')
+            if not def_element:
+                continue
+
+            def_text = def_element.text.strip().rstrip(' :').strip()
+
+            guideword = ""
+            parent_sense = block.find_parent(class_='dsense')
+            if parent_sense:
+                gw_element = parent_sense.select_one('.guideword, .dsense_h')
+                if gw_element:
+                    guideword = gw_element.text.strip()
+
+            example_elements = block.select('.eg.deg')
+            block_examples = [ex.text.strip() for ex in example_elements if ex.text.strip()]
+
+            for ex in block_examples:
+                if ex not in all_examples:
+                    all_examples.append(ex)
+
+            senses.append({
+                "pos": pos,
+                "guideword": guideword,
+                "definition": def_text,
+                "examples": block_examples
+            })
+
+    if not senses:
+        fallback_defs = soup.select('.def.ddef_d')
+        fallback_examples = [ex.text.strip() for ex in soup.select('.eg.deg') if ex.text.strip()]
+        for d in fallback_defs:
+            senses.append({
+                "pos": "",
+                "guideword": "",
+                "definition": d.text.strip().rstrip(' :').strip(),
+                "examples": fallback_examples
+            })
+        all_examples = fallback_examples
+
+    if not senses:
+        return None
+
+    uk_ipa_element = soup.select_one('.uk .ipa.dipa')
+    uk_audio_source = soup.select_one('.uk source[type="audio/mpeg"]')
     
-    uk_ipa_element = primary_entry.select_one('.uk .ipa.dipa')
-    uk_audio_source = primary_entry.select_one('.uk source[type="audio/mpeg"]')
+    us_ipa_element = soup.select_one('.us .ipa.dipa')
+    us_audio_source = soup.select_one('.us source[type="audio/mpeg"]')
     
-    us_ipa_element = primary_entry.select_one('.us .ipa.dipa')
-    us_audio_source = primary_entry.select_one('.us source[type="audio/mpeg"]')
-    
-    definition = def_element.text.strip() if def_element else "No definition found."
     uk_ipa = f"/{uk_ipa_element.text.strip()}/" if uk_ipa_element else ""
     us_ipa = f"/{us_ipa_element.text.strip()}/" if us_ipa_element else ""
     uk_audio = "https://dictionary.cambridge.org" + uk_audio_source['src'] if (uk_audio_source and 'src' in uk_audio_source.attrs) else None
     us_audio = "https://dictionary.cambridge.org" + us_audio_source['src'] if (us_audio_source and 'src' in us_audio_source.attrs) else None
-    
-    examples = [ex.text.strip() for ex in example_elements][:3]
-    
+
     return {
         "word": word,
-        "definition": definition,
+        "senses": senses,
+        "definition": senses[0]["definition"] if senses else "No definition found.",
+        "examples_raw": all_examples,
         "uk_ipa": uk_ipa,
         "us_ipa": us_ipa,
         "uk_audio": uk_audio,
         "us_audio": us_audio,
-        "examples_raw": examples,
         "headers": headers
     }
