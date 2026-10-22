@@ -1,9 +1,15 @@
 import requests
 import json
 import re
+import os
+import tempfile
+from html import escape
+from pathlib import Path
+from urllib.parse import quote, urljoin
 from bs4 import BeautifulSoup
 
-CONFIG_FILE = 'config.json'
+CONFIG_FILE = Path(__file__).resolve().with_name('config.json')
+REQUEST_TIMEOUT = (5, 15)
 
 def load_config():
     global config
@@ -14,8 +20,7 @@ def load_config():
                 config['preferences'] = {}
             return config
     except FileNotFoundError:
-        print(f"Error: Could not find '{CONFIG_FILE}'. Please create it in the same directory.")
-        exit(1)
+        raise SystemExit(f"Error: Could not find '{CONFIG_FILE}'. Please create it beside engine.py.")
 
 config = load_config()
 
@@ -23,30 +28,34 @@ def get_preference(key, default=None):
     return config.get('preferences', {}).get(key, default)
 
 def save_preference(key, value):
-    global config
-    if 'preferences' not in config:
-        config['preferences'] = {}
-    config['preferences'][key] = value
-    try:
-        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump(config, f, indent=4)
-    except Exception as e:
-        print(f"Error writing preference to {CONFIG_FILE}: {e}")
+    save_preferences({key: value})
 
 def save_preferences(pref_dict):
     global config
     if 'preferences' not in config:
         config['preferences'] = {}
     config['preferences'].update(pref_dict)
+    temp_path = None
     try:
-        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+        # Replace only after writing succeeds so an interrupted save keeps the config intact.
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8',
+                                         dir=Path(CONFIG_FILE).parent, delete=False) as f:
+            temp_path = f.name
             json.dump(config, f, indent=4)
-    except Exception as e:
+        os.replace(temp_path, CONFIG_FILE)
+    except OSError as e:
         print(f"Error writing preferences to {CONFIG_FILE}: {e}")
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.unlink(temp_path)
 
 def invoke_anki(action, **params):
     payload = {'action': action, 'version': 6, 'params': params}
-    response = requests.post(config['anki']['url'], json=payload).json()
+    http_response = requests.post(config['anki']['url'], json=payload, timeout=REQUEST_TIMEOUT)
+    http_response.raise_for_status()
+    response = http_response.json()
+    if not isinstance(response, dict) or 'error' not in response or 'result' not in response:
+        raise ValueError('Invalid response from AnkiConnect')
     if response.get('error'):
         raise Exception(response['error'])
     return response.get('result')
@@ -63,17 +72,32 @@ def is_duplicate(word, deck_name):
     return len(existing_notes) > 0
 
 def format_sentence(word, sentence):
-    if not sentence:
-        return ""
     open_tag = config['templates']['highlight_open_tag']
     close_tag = config['templates']['highlight_close_tag']
-    styled_replacement = f"{open_tag}\\g<0>{close_tag}"
-    return re.sub(rf"(?i)({re.escape(word)})", styled_replacement, sentence)
+    return _highlight_text(word, sentence, open_tag, close_tag)
 
 def bold_word(word, text):
+    return _highlight_text(word, text, '<b>', '</b>')
+
+def _highlight_text(word, text, open_tag, close_tag):
+    """Escape plain editor text while retaining only the generated highlight tags."""
     if not text:
         return ""
-    return re.sub(rf"(?i)({re.escape(word)})", r"<b>\g<0></b>", text)
+    if not word:
+        return escape(text)
+    parts = []
+    last = 0
+    for match in re.finditer(re.escape(word), text, flags=re.IGNORECASE):
+        parts.extend((escape(text[last:match.start()]), open_tag,
+                      escape(match.group()), close_tag))
+        last = match.end()
+    parts.append(escape(text[last:]))
+    return ''.join(parts)
+
+def download_audio(url, headers):
+    response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+    response.raise_for_status()
+    return response.content
 
 def group_senses(senses):
     """Groups senses that share the same Part of Speech and Guideword."""
@@ -119,12 +143,13 @@ def scrape_cambridge(word, manual_url=None):
     if manual_url:
         url = manual_url
     else:
-        formatted_query = word.lower().replace(' ', '-')
+        formatted_query = quote(word.strip().lower().replace(' ', '-'), safe='-')
         url = f"{config['scraper']['base_url']}{formatted_query}"
     
-    response = requests.get(url, headers=headers)
-    if response.status_code != 200:
+    response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+    if response.status_code == 404:
         return None
+    response.raise_for_status()
 
     soup = BeautifulSoup(response.text, 'html.parser')
     entries = soup.select('.pr.entry-body__el')
@@ -215,8 +240,8 @@ def scrape_cambridge(word, manual_url=None):
     
     uk_ipa = f"/{uk_ipa_element.text.strip()}/" if uk_ipa_element else ""
     us_ipa = f"/{us_ipa_element.text.strip()}/" if us_ipa_element else ""
-    uk_audio = "https://dictionary.cambridge.org" + uk_audio_source['src'] if (uk_audio_source and 'src' in uk_audio_source.attrs) else None
-    us_audio = "https://dictionary.cambridge.org" + us_audio_source['src'] if (us_audio_source and 'src' in us_audio_source.attrs) else None
+    uk_audio = urljoin(url, uk_audio_source['src']) if (uk_audio_source and uk_audio_source.get('src')) else None
+    us_audio = urljoin(url, us_audio_source['src']) if (us_audio_source and us_audio_source.get('src')) else None
 
     groups = group_senses(senses)
 

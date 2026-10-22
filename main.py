@@ -1,6 +1,7 @@
 import customtkinter as ctk
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk
+from html import escape
 import requests
 import base64
 import pyperclip
@@ -11,7 +12,6 @@ import threading
 import re
 import engine
 
-pygame.mixer.init()
 ctk.set_appearance_mode("System")
 ctk.set_default_color_theme("blue")
 
@@ -517,10 +517,12 @@ class AnkiAutomataApp(ctk.CTk):
         engine.save_preference('audio_choice', self.audio_choice.get())
 
     def check_triggers(self):
-        if self.search_triggered:
-            self.search_triggered = False
-            self.process_clipboard()
-        self.after(200, self.check_triggers)
+        try:
+            if self.search_triggered:
+                self.search_triggered = False
+                self.process_clipboard()
+        finally:
+            self.after(200, self.check_triggers)
 
     def start_local_server(self):
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -560,8 +562,9 @@ class AnkiAutomataApp(ctk.CTk):
         headers = self.current_scraped_data.get("headers")
         if url:
             try:
-                req = requests.get(url, headers=headers)
-                audio_data = io.BytesIO(req.content)
+                audio_data = io.BytesIO(engine.download_audio(url, headers))
+                if not pygame.mixer.get_init():
+                    pygame.mixer.init()
                 pygame.mixer.music.load(audio_data)
                 pygame.mixer.music.play()
             except Exception as e:
@@ -572,7 +575,7 @@ class AnkiAutomataApp(ctk.CTk):
         self.log_area.insert("end", message + "\n")
         self.log_area.see("end")
         self.log_area.configure(state="disabled")
-        self.update()
+        self.update_idletasks()
 
     def reset_editor(self, message="Search a word to see its definition here..."):
         self.word_header.configure(text="Dictionary Editor")
@@ -705,7 +708,11 @@ class AnkiAutomataApp(ctk.CTk):
         self.us_ipa_label.configure(text="-")
 
     def process_clipboard(self):
-        clipboard_text = pyperclip.paste().strip()
+        try:
+            clipboard_text = pyperclip.paste().strip()
+        except pyperclip.PyperclipException as e:
+            self.log(f"[!] Clipboard Error: {e}")
+            return
         if not clipboard_text: return
         
         self.deiconify()
@@ -727,7 +734,7 @@ class AnkiAutomataApp(ctk.CTk):
         self.current_scraped_data = None
         self.reset_editor("Searching Cambridge Dictionary...")
         self.log(f"Searching '{word}'...")
-        self.update()
+        self.update_idletasks()
         
         try:
             if engine.is_duplicate(word, deck):
@@ -739,7 +746,12 @@ class AnkiAutomataApp(ctk.CTk):
             self.reset_editor("⚠️ Ensure Anki is open and AnkiConnect is installed.")
             return
 
-        data = engine.scrape_cambridge(word, manual_url)
+        try:
+            data = engine.scrape_cambridge(word, manual_url)
+        except requests.RequestException as e:
+            self.log(f"[!] Dictionary Error: {e}")
+            self.reset_editor("Could not reach Cambridge Dictionary. Please try again.")
+            return
         
         if not data and not manual_url:
             dialog = ctk.CTkInputDialog(text=f"Could not find '{word}'.\nPaste direct Cambridge URL:", title="Manual Entry")
@@ -761,7 +773,11 @@ class AnkiAutomataApp(ctk.CTk):
         if data['us_audio']:
             self.us_btn.configure(state="normal")
             self.us_ipa_label.configure(text=data['us_ipa'])
-            if not data['uk_audio']: self.audio_choice.set("us")
+        if not data.get(f"{self.audio_choice.get()}_audio"):
+            if data['uk_audio']:
+                self.audio_choice.set("uk")
+            elif data['us_audio']:
+                self.audio_choice.set("us")
         
         self.populate_editor(data, word)
         self.add_btn.configure(state="normal")
@@ -778,22 +794,22 @@ class AnkiAutomataApp(ctk.CTk):
         region = self.audio_choice.get()
         
         target_audio_url = data.get(f"{region}_audio")
-        target_ipa = data.get(f"{region}_ipa")
+        target_ipa = data.get(f"{region}_ipa") or ""
         
         edited_definition = self.def_area.get("1.0", tk.END).strip()
         edited_examples = self.ex_area.get("1.0", tk.END).strip()
         separator = engine.config['templates']['example_separator']
         
         self.log("Building Anki note...")
-        self.update()
+        self.update_idletasks()
         
         audio_filename = f"ankiautomata_{region}_{word.replace(' ', '_')}.mp3"
         audio_tag = ""
         if target_audio_url:
             try:
-                audio_req = requests.get(target_audio_url, headers=data['headers'])
-                audio_base64 = base64.b64encode(audio_req.content).decode('utf-8')
-                engine.invoke_anki('storeMediaFile', filename=audio_filename, data=audio_base64)
+                audio_bytes = engine.download_audio(target_audio_url, data['headers'])
+                audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
+                audio_filename = engine.invoke_anki('storeMediaFile', filename=audio_filename, data=audio_base64)
                 audio_tag = f"[sound:{audio_filename}]"
             except Exception as e:
                 self.log(f"[!] Audio save error: {e}")
@@ -814,7 +830,7 @@ class AnkiAutomataApp(ctk.CTk):
         
         bolded_examples_html = bolded_examples.replace('\r\n', '\n').replace('\n', separator)
         
-        front_html = engine.config['templates']['front'].format(word=word)
+        front_html = engine.config['templates']['front'].format(word=escape(word))
         highlighted_sentence = engine.format_sentence(word, sentence)
         back_html = engine.config['templates']['back_layout'].format(
             definition=bolded_definition_html, 

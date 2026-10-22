@@ -20,13 +20,12 @@ payload = {
     }
 }
 
-try:
-    # Send the POST request to Anki
-    response = requests.post(url, json=payload)
-    
-    # Print the response from Anki
-    print("Response from Anki:")
-    print(response.json())
-    
-except Exception as e:
-    print(f"Failed to connect. Is Anki running? Error: {e}")
+if __name__ == "__main__":
+    try:
+        # Run explicitly: this smoke test adds a real note to the local Anki collection.
+        response = requests.post(url, json=payload, timeout=(5, 15))
+        response.raise_for_status()
+        print("Response from Anki:")
+        print(response.json())
+    except Exception as e:
+        print(f"Failed to connect. Is Anki running? Error: {e}")

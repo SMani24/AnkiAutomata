@@ -204,3 +204,15 @@ curl -s http://127.0.0.1:24536/
 
 
 3. AnkiAutomata will immediately come to the foreground, read the copied word from your clipboard, and perform the dictionary lookup automatically.
+
+## Development checks
+
+Run the offline regression suite from the repository root with the virtual environment activated:
+
+```bash
+python -m unittest discover -s tests -p 'test_*.py' -v
+```
+
+These tests use mocked network responses and do not require Anki, Cambridge access, an audio device, or a desktop display. `tests/ankil_test.py` and `tests/scraper_test.py` are manual integration scripts; running the Anki script explicitly creates a note in your local collection.
+
+The application loads `config.json` beside `engine.py`, so launching `main.py` from another working directory also works. Preference saves replace the config file only after writing succeeds. Network requests have connection and read timeouts, and audio playback initializes the device only when requested.
