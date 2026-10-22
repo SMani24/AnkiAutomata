@@ -1,19 +1,17 @@
 import customtkinter as ctk
 import tkinter as tk
 from tkinter import ttk
-from html import escape
-import requests
-import base64
 import pyperclip
 import io
 import pygame
 import argparse
 from pathlib import Path
-from queue import Empty, Queue
+from queue import Empty, Full, Queue
 import threading
-import re
 import engine
 from ipc import LookupServer
+from background import BackgroundTasks
+from storage import StateStore
 
 ctk.set_default_color_theme(str(Path(__file__).with_name('theme.json')))
 ctk.set_appearance_mode(engine.get_preference('appearance', 'System'))
@@ -22,7 +20,6 @@ SURFACE = ('#FFFFFF', '#1C2825')
 FIELD = ('#F8FAF6', '#17221F')
 MUTED = ('#647874', '#98ABA5')
 BORDER = ('#DCE4DC', '#344740')
-ACCENT = ('#276B5B', '#70B69E')
 TEXT = ('#243B3A', '#E5EEEB')
 
 class DeckSelectionDialog(ctk.CTkToplevel):
@@ -115,6 +112,16 @@ class AnkiAutomataApp(ctk.CTk):
             pass
         
         self.current_scraped_data = None
+        self._closing = False
+        self._searching = False
+        self._exporting = False
+        self._search_id = 0
+        self._audio_id = 0
+        self._duplicate_notes = []
+        self._autosave_after = None
+        self._compact = False
+        self.tasks = BackgroundTasks()
+        self.store = StateStore()
         self._is_dragging_splitter = False
         
         self.user_pref_def_height = engine.get_preference('user_def_height', 120)
@@ -134,8 +141,8 @@ class AnkiAutomataApp(ctk.CTk):
         ctk.CTkLabel(self.topbar, text="a", width=36, height=36, corner_radius=10,
                      fg_color=('#276B5B', '#438D78'), text_color='white',
                      font=self.fonts['title']).grid(row=0, column=0, padx=(0, 12))
-        ctk.CTkLabel(self.topbar, text="AnkiAutomata", font=self.fonts['title'],
-                     anchor='w').grid(row=0, column=1, sticky='w')
+        self.brand_label = ctk.CTkLabel(self.topbar, text="AnkiAutomata", font=self.fonts['title'], anchor='w')
+        self.brand_label.grid(row=0, column=1, sticky='w')
         self.deck_var = tk.StringVar(value=engine.get_preference(
             'selected_deck', engine.config['anki']['default_deck']))
         self.deck_display = ctk.CTkEntry(self.topbar, textvariable=self.deck_var,
@@ -156,6 +163,17 @@ class AnkiAutomataApp(ctk.CTk):
         self.search_btn = ctk.CTkButton(self.search_bar, text='Search', width=110,
                                        height=46, font=self.fonts['btn'], command=self.search_word)
         self.search_btn.grid(row=0, column=1)
+        self.utilities = ctk.CTkFrame(self.search_bar, fg_color='transparent')
+        self.utilities.grid(row=1, column=0, columnspan=2, sticky='ew', pady=(8, 0))
+        self.history_btn = self.quiet_button(self.utilities, 'Recent lookups', self.open_history, width=110)
+        self.history_btn.pack(side='left')
+        self.manual_btn = self.quiet_button(self.utilities, 'Use URL', self.search_manual_url, width=72)
+        self.manual_btn.pack(side='left', padx=(8, 0))
+        self.compact_btn = self.quiet_button(self.utilities, 'Compact mode', self.toggle_compact, width=110)
+        self.compact_btn.pack(side='right')
+        self.progress = ctk.CTkProgressBar(self.search_bar, height=3, mode='indeterminate')
+        self.progress.grid(row=2, column=0, columnspan=2, sticky='ew', pady=(6, 0))
+        self.progress.grid_remove()
 
         self.right_frame = ctk.CTkFrame(self, fg_color=SURFACE, corner_radius=16,
                                         border_width=1, border_color=BORDER)
@@ -232,8 +250,16 @@ class AnkiAutomataApp(ctk.CTk):
         self.sentence_text.pack(fill='x')
         self.reset_editor()
 
+        self.duplicate_frame = ctk.CTkFrame(self, fg_color=('#FFF3D5', '#3A3423'), corner_radius=10)
+        self.duplicate_frame.grid_columnconfigure(0, weight=1)
+        self.duplicate_label = ctk.CTkLabel(self.duplicate_frame, text='', anchor='w', justify='left',
+            text_color=('#6D501D', '#E0C88D'), font=self.fonts['small'])
+        self.duplicate_label.grid(row=0, column=0, sticky='ew', padx=16, pady=12)
+        self.open_note_btn = self.quiet_button(self.duplicate_frame, 'Open in Anki', self.open_existing_note, width=110)
+        self.open_note_btn.grid(row=0, column=1, padx=(0, 12))
+
         self.submit_frame = ctk.CTkFrame(self, fg_color='transparent')
-        self.submit_frame.grid(row=3, column=0, sticky='ew', padx=28, pady=(16, 10))
+        self.submit_frame.grid(row=4, column=0, sticky='ew', padx=28, pady=(16, 10))
         self.submit_frame.grid_columnconfigure(0, weight=1)
         self.audio_choice = tk.StringVar(value=engine.get_preference('audio_choice', 'uk'))
         self.audio_save_frame = ctk.CTkFrame(self.submit_frame, fg_color='transparent')
@@ -249,7 +275,7 @@ class AnkiAutomataApp(ctk.CTk):
         self.add_btn.grid(row=0, column=1, sticky='e')
 
         self.status_frame = ctk.CTkFrame(self, fg_color='transparent')
-        self.status_frame.grid(row=4, column=0, sticky='ew', padx=28, pady=(0, 12))
+        self.status_frame.grid(row=5, column=0, sticky='ew', padx=28, pady=(0, 12))
         self.status_frame.grid_columnconfigure(0, weight=1)
         self.status_label = ctk.CTkLabel(self.status_frame, text='Ready · Select text in your PDF to begin',
             font=self.fonts['small'], text_color=MUTED, anchor='w')
@@ -260,11 +286,29 @@ class AnkiAutomataApp(ctk.CTk):
 
         self.word_entry.bind('<Return>', lambda event: self.search_word())
         self.word_entry.focus()
+        self.word_var.trace_add('write', lambda *_: self.schedule_autosave())
+        for editor in (self.def_area, self.ex_area, self.sentence_text):
+            editor.bind('<KeyRelease>', lambda event: self.schedule_autosave(), add='+')
+        self.bind('<Control-Return>', self.add_shortcut)
+        for editor in (self.word_entry, self.def_area, self.ex_area, self.sentence_text):
+            editor.bind('<Control-Return>', self.add_shortcut)
+        self.bind('<Control-l>', self.focus_search)
+        self.bind('<Control-Shift-M>', lambda event: self.toggle_compact())
+        self.bind('<Escape>', self.dismiss_compact)
+        self.bind('<Configure>', self._on_window_resize)
+        self._full_geometry = self.geometry()
+        self._poll_after = self.after(50, self.poll_tasks)
+        if engine.get_preference('compact_mode', False):
+            self.toggle_compact()
+        if self.store.draft and not initial_word:
+            self.restore_snapshot(self.store.draft)
+        if self.store.error:
+            self.log(f'Saved draft could not be read: {self.store.error}')
         self.server_thread = threading.Thread(target=self.start_local_server, daemon=True)
         self.server_thread.start()
         if initial_word:
             self.lookup_requests.put_nowait(initial_word)
-        self.after(200, self.check_triggers)
+        self._trigger_after = self.after(200, self.check_triggers)
 
     def quiet_button(self, parent, text, command, **kwargs):
         return ctk.CTkButton(parent, text=text, command=command, font=self.fonts['small'],
@@ -273,14 +317,14 @@ class AnkiAutomataApp(ctk.CTk):
     def toggle_activity(self):
         self._log_visible = not self._log_visible
         if self._log_visible:
-            self.log_area.grid(row=5, column=0, sticky='ew', padx=28, pady=(0, 16))
+            self.log_area.grid(row=6, column=0, sticky='ew', padx=28, pady=(0, 16))
         else:
             self.log_area.grid_remove()
 
     def open_settings(self):
         dialog = ctk.CTkToplevel(self)
         dialog.title('Settings')
-        dialog.geometry('420x340')
+        dialog.geometry('420x420')
         dialog.transient(self)
         dialog.grab_set()
         dialog.bind('<Escape>', lambda event: dialog.destroy())
@@ -295,19 +339,239 @@ class AnkiAutomataApp(ctk.CTk):
         scale.pack(fill='x', padx=24, pady=(6, 18))
         ctk.CTkSwitch(dialog, text='Combine all meanings by default', variable=self.auto_all_meanings_var,
                        command=self.on_toggle_auto_all, font=self.fonts['small']).pack(anchor='w', padx=24)
+        ctk.CTkLabel(dialog, text='Pronunciation saved to Anki', font=self.fonts['small'], text_color=MUTED).pack(anchor='w', padx=24, pady=(18, 6))
+        audio = ctk.CTkOptionMenu(dialog, values=['UK', 'US'], command=lambda value: self.set_audio_preference(value.lower()))
+        audio.set(self.audio_choice.get().upper())
+        audio.pack(fill='x', padx=24)
 
     def on_appearance_changed(self, choice):
         ctk.set_appearance_mode(choice)
         engine.save_preference('appearance', choice)
 
-    # --- Height Splitter Logic ---
-    def _on_splitter_hover(self, entering):
-        if not self._is_dragging_splitter:
-            color = ('#276B5B', '#438D78') if entering else BORDER
-            grip_color = ("#ffffff", "#dce4ee") if entering else ("gray55", "gray50")
-            self.splitter.configure(fg_color=color)
-            self.grip_indicator.configure(fg_color=grip_color)
+    def focus_search(self, event=None):
+        self.word_entry.focus_set()
+        self.word_entry.select_range(0, 'end')
+        return 'break'
 
+    def add_shortcut(self, event=None):
+        self.confirm_and_add()
+        return 'break'
+
+    def _on_window_resize(self, event):
+        if event.widget is self:
+            width = max(180, event.width - 120)
+            self.word_header.configure(wraplength=width)
+            self.status_label.configure(wraplength=width)
+            self.duplicate_label.configure(wraplength=max(160, width - 130))
+
+    def toggle_compact(self):
+        self.update_idletasks()
+        self._compact = not self._compact
+        if self._compact:
+            self._full_geometry = self.geometry()
+            height = self.compact_minimum_height()
+            self.minsize(540, height)
+            self.geometry(f'640x{max(720, height)}+{max(0, self.winfo_screenwidth() - 680)}+60')
+            for widget in (self.brand_label, self.deck_display, self.context_frame, self.audio_save_frame):
+                widget.grid_remove()
+            self.uk_ipa_label.pack_forget()
+            self.us_ipa_label.pack_forget()
+            self.compact_btn.configure(text='Full editor')
+            self.deck_btn.configure(text='Deck')
+            if self._log_visible:
+                self.toggle_activity()
+        else:
+            self.minsize(840, 720)
+            self.geometry(self._full_geometry)
+            for widget in (self.brand_label, self.deck_display, self.context_frame, self.audio_save_frame):
+                widget.grid()
+            self.uk_ipa_label.pack(side='left', after=self.uk_btn, padx=(8, 24))
+            self.us_ipa_label.pack(side='left', after=self.us_btn, padx=8)
+            self.compact_btn.configure(text='Compact mode')
+            self.deck_btn.configure(text='Change deck')
+        self.update_audio_ui()
+        self.adjust_def_area_height()
+        engine.save_preference('compact_mode', self._compact)
+
+    def compact_minimum_height(self):
+        scale = self.font_scale_factors[self.current_scale_choice]
+        return 700 + round((scale - 1) * 150) + (80 if self._duplicate_notes else 0)
+
+    def dismiss_compact(self, event=None):
+        if self._compact:
+            self.save_draft()
+            self.iconify()
+            return 'break'
+
+    def run_task(self, operation, success, failure=None):
+        if failure is None:
+            failure = lambda error: self.log(f'Could not complete the action: {error}')
+        try:
+            self.tasks.submit(operation, success, failure)
+        except Full:
+            failure(RuntimeError('Background queue is busy. Please try again shortly.'))
+
+    def poll_tasks(self):
+        try:
+            self.tasks.poll()
+        finally:
+            if not self._closing:
+                self._poll_after = self.after(50, self.poll_tasks)
+
+    def snapshot(self):
+        data = self.current_scraped_data
+        query = self.word_var.get().strip()
+        word = data['word'] if data else query
+        if not word:
+            return None
+        return {'word': word, 'query': query, 'data': data,
+                'definition': self.def_area.get('1.0', 'end-1c') if data else '',
+                'examples': self.ex_area.get('1.0', 'end-1c') if data else '',
+                'sentence': self.sentence_text.get('1.0', 'end-1c'),
+                'deck': self.deck_var.get(), 'audio': self.audio_choice.get(),
+                'sense': self.sense_var.get()}
+
+    def schedule_autosave(self):
+        if self._closing:
+            return
+        if self._autosave_after is not None:
+            self.after_cancel(self._autosave_after)
+        self._autosave_after = self.after(600, self.save_draft)
+
+    def save_draft(self):
+        if self._autosave_after is not None:
+            self.after_cancel(self._autosave_after)
+        self._autosave_after = None
+        if self._searching:
+            return
+        try:
+            self.store.save_draft(self.snapshot())
+        except OSError as error:
+            self.log(f'Draft could not be saved: {error}')
+
+    def restore_snapshot(self, snapshot):
+        if self._exporting:
+            return
+        self.save_draft()
+        self._search_id += 1
+        self._audio_id += 1
+        self.set_searching(False)
+        self.current_scraped_data = snapshot.get('data')
+        self.word_var.set(snapshot.get('query', snapshot['word']))
+        self.deck_var.set(snapshot.get('deck') or self.deck_var.get())
+        self.audio_choice.set(snapshot.get('audio', 'uk'))
+        self.set_duplicates([])
+        if self.current_scraped_data:
+            self.populate_editor(self.current_scraped_data, snapshot['word'])
+            for editor, key in ((self.def_area, 'definition'), (self.ex_area, 'examples')):
+                editor.delete('1.0', 'end')
+                editor.insert('1.0', snapshot.get(key, ''))
+            self.sense_var.set(snapshot.get('sense') or self.sense_var.get())
+        else:
+            self.reset_editor()
+        self.sentence_text.delete('1.0', 'end')
+        self.sentence_text.insert('1.0', snapshot.get('sentence', ''))
+        self.update_audio_ui()
+        self.adjust_def_area_height()
+        self.log(f'Restored draft for {snapshot["word"]}.')
+        self.save_draft()
+        self.recheck_duplicates()
+
+    def open_history(self):
+        if self._exporting:
+            return
+        self.save_draft()
+        dialog = ctk.CTkToplevel(self)
+        dialog.title('Recent lookups')
+        dialog.geometry('480x540')
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.bind('<Escape>', lambda event: dialog.destroy())
+        ctk.CTkLabel(dialog, text='Pick up where you left off', font=self.fonts['title']).pack(
+            anchor='w', padx=24, pady=24)
+        listing = ctk.CTkScrollableFrame(dialog, fg_color='transparent')
+        listing.pack(fill='both', expand=True, padx=16, pady=(0, 16))
+        if not self.store.history:
+            ctk.CTkLabel(listing, text='Your recent words will appear here.', text_color=MUTED).pack(pady=24)
+        for snapshot in self.store.history:
+            def restore(item=snapshot):
+                dialog.destroy()
+                self.restore_snapshot(item)
+            label = snapshot['word'] + '\n' + (snapshot.get('deck') or 'Draft')
+            ctk.CTkButton(listing, text=label, anchor='w', height=64, fg_color=FIELD,
+                hover_color=BORDER, text_color=TEXT, font=self.fonts['body'], command=restore).pack(
+                fill='x', padx=4, pady=4)
+
+    def set_searching(self, value):
+        self._searching = value
+        self.deck_btn.configure(state='disabled' if value or self._exporting else 'normal')
+        if value:
+            self.progress.grid()
+            self.progress.start()
+        else:
+            self.progress.stop()
+            self.progress.grid_remove()
+        self.refresh_add_state()
+
+    def refresh_add_state(self):
+        enabled = (self.current_scraped_data is not None and not self._searching
+                   and not self._exporting and not self._duplicate_notes)
+        self.add_btn.configure(state='normal' if enabled else 'disabled')
+
+    def set_duplicates(self, notes):
+        self._duplicate_notes = notes
+        if notes:
+            preview = engine.note_preview(notes[0])[:90]
+            self.duplicate_label.configure(text='Already in this deck' + (' · ' + preview if preview else ''))
+            self.duplicate_frame.grid(row=3, column=0, sticky='ew', padx=28, pady=(12, 0))
+        else:
+            self.duplicate_frame.grid_remove()
+        if self._compact:
+            self.minsize(540, self.compact_minimum_height())
+        self.refresh_add_state()
+
+    def open_existing_note(self):
+        notes = list(self._duplicate_notes)
+        self.run_task(lambda: engine.open_notes(notes), lambda _: self.log('Opened the existing card in Anki.'))
+
+    def recheck_duplicates(self):
+        if not self.current_scraped_data:
+            return
+        self._search_id += 1
+        token = self._search_id
+        word, deck = self.current_scraped_data['word'], self.deck_var.get()
+        self.set_searching(True)
+        self.set_duplicates([])
+        def done(notes):
+            if token != self._search_id:
+                return
+            self.set_searching(False)
+            self.set_duplicates(notes)
+            self.log('Existing card found. Open it in Anki to review.' if notes else 'Ready to add to Anki.')
+            self.save_draft()
+        def failed(error):
+            if token != self._search_id:
+                return
+            self.set_searching(False)
+            self.log(f'Anki is unavailable. Your draft is safe; retry Add when Anki is running. {error}')
+            self.save_draft()
+        self.run_task(lambda: engine.find_duplicate_notes(word, deck), done, failed)
+
+    def update_audio_ui(self):
+        data = self.current_scraped_data or {}
+        for region, button, label in (('uk', self.uk_btn, self.uk_ipa_label),
+                                       ('us', self.us_btn, self.us_ipa_label)):
+            button.configure(state='normal' if data.get(f'{region}_audio') else 'disabled')
+            label.configure(text=data.get(f'{region}_ipa') or '—')
+        if not data.get(f'{self.audio_choice.get()}_audio'):
+            for region in ('uk', 'us'):
+                if data.get(f'{region}_audio'):
+                    self.audio_choice.set(region)
+                    break
+        ipa = data.get(f'{self.audio_choice.get()}_ipa') or ''
+        self.word_meta.configure(text=(ipa + ' · ' if self._compact and ipa else '') + 'CAMBRIDGE DICTIONARY')
+
+    # --- Height Splitter Logic ---
     def _on_splitter_press(self, event):
         self._is_dragging_splitter = True
         self._drag_start_y = event.y_root
@@ -321,8 +585,7 @@ class AnkiAutomataApp(ctk.CTk):
         new_h = self._drag_start_h + delta
         
         min_h = 55
-        rf_h = self.right_frame.winfo_height()
-        max_h = max(min_h + 40, rf_h - 260) if rf_h > 350 else 400
+        max_h = max(min_h, self.def_area.winfo_height() + self.ex_area.winfo_height() - 80)
         
         clamped_h = max(min_h, min(new_h, max_h))
         self.def_area.configure(height=clamped_h)
@@ -353,29 +616,36 @@ class AnkiAutomataApp(ctk.CTk):
         needed_height = (num_lines * line_height) + 26
         min_height = 65
 
-        if needed_height < self.user_pref_def_height:
+        preferred = min(self.user_pref_def_height, 100) if self._compact else self.user_pref_def_height
+        if needed_height < preferred:
             final_height = max(min_height, needed_height)
         else:
-            final_height = self.user_pref_def_height
+            final_height = preferred
 
         self.def_area.configure(height=final_height)
 
     def on_closing(self, event=None):
+        self.save_draft()
+        self._closing = True
+        self.tasks.close()
+        for timer in (self._autosave_after, self._poll_after, self._trigger_after):
+            if timer is not None:
+                self.after_cancel(timer)
         if self.lookup_server is not None:
             self.lookup_server.shutdown()
         try:
-            w = self.winfo_width()
-            h = self.winfo_height()
-            if w >= 400 and h >= 300:
-                engine.save_preferences({
-                    'window_width': w, 
-                    'window_height': h,
-                    'user_def_height': int(self.user_pref_def_height)
-                })
-        except Exception as e:
-            print(f"Error saving window preferences: {e}")
+            geometry = self._full_geometry if self._compact else self.geometry()
+            size = geometry.split('+')[0].split('-')[0]
+            width, height = (int(value) for value in size.split('x'))
+            engine.save_preferences({'window_width': width, 'window_height': height,
+                                     'user_def_height': int(self.user_pref_def_height)})
+        except (ValueError, tk.TclError) as error:
+            print(f'Error saving window preferences: {error}')
+        # CTk also owns delayed redraws; cancel them before their Tcl commands disappear.
+        for timer in self.tk.call('after', 'info'):
+            self.tk.call('after', 'cancel', timer)
         self.destroy()
-        return "break"
+        return 'break'
 
     def _setup_fonts(self):
         self.base_font_sizes = {
@@ -430,8 +700,12 @@ class AnkiAutomataApp(ctk.CTk):
             self.adjust_def_area_height()
 
         engine.save_preference('font_scale', choice)
+        if self._compact:
+            self.minsize(540, self.compact_minimum_height())
 
     def on_toggle_auto_all(self):
+        if self._exporting:
+            return
         val = self.auto_all_meanings_var.get()
         engine.save_preference('auto_all_meanings', val)
         if not self.current_scraped_data:
@@ -447,11 +721,19 @@ class AnkiAutomataApp(ctk.CTk):
                 self.sense_var.set(first_label)
                 self.apply_group(0)
 
+    def set_audio_preference(self, region):
+        self.audio_choice.set(region)
+        self.on_audio_choice_changed()
+
     def on_audio_choice_changed(self):
         engine.save_preference('audio_choice', self.audio_choice.get())
+        self.update_audio_ui()
+        self.schedule_autosave()
 
     def check_triggers(self):
         try:
+            if self._exporting:
+                return
             try:
                 text = self.lookup_requests.get_nowait()
             except Empty:
@@ -461,7 +743,7 @@ class AnkiAutomataApp(ctk.CTk):
             else:
                 self.process_text(text)
         finally:
-            self.after(200, self.check_triggers)
+            self._trigger_after = self.after(200, self.check_triggers)
 
     def start_local_server(self):
         try:
@@ -472,17 +754,25 @@ class AnkiAutomataApp(ctk.CTk):
             print(f"Local server error: {e}")
 
     def change_deck(self):
-        available_decks = engine.get_anki_decks()
-        current = self.deck_var.get()
-        if current not in available_decks:
-            available_decks.append(current)
-            
-        dialog = DeckSelectionDialog(self, available_decks, current, font=self.fonts["btn"])
-        self.wait_window(dialog)
-        
-        if dialog.selected_deck:
-            self.deck_var.set(dialog.selected_deck)
-            engine.save_preference('selected_deck', dialog.selected_deck)
+        if self._exporting or self._searching:
+            return
+        self.deck_btn.configure(state='disabled')
+        def show(decks):
+            self.deck_btn.configure(state='normal')
+            current = self.deck_var.get()
+            if current not in decks:
+                decks = list(decks) + [current]
+            dialog = DeckSelectionDialog(self, decks, current, font=self.fonts['btn'])
+            self.wait_window(dialog)
+            if not self._closing and dialog.selected_deck:
+                self.deck_var.set(dialog.selected_deck)
+                engine.save_preference('selected_deck', dialog.selected_deck)
+                self.save_draft()
+                self.recheck_duplicates()
+        def failed(error):
+            self.deck_btn.configure(state='normal')
+            self.log(f'Could not load decks. Ensure Anki is running. {error}')
+        self.run_task(lambda: engine.invoke_anki('deckNames'), show, failed)
 
     def auto_bullet(self, event):
         self.ex_area.insert("insert", "\n• ")
@@ -490,18 +780,29 @@ class AnkiAutomataApp(ctk.CTk):
         return "break" 
 
     def play_audio(self, region):
-        if not self.current_scraped_data: return
-        url = self.current_scraped_data.get(f"{region}_audio")
-        headers = self.current_scraped_data.get("headers")
-        if url:
+        data = self.current_scraped_data
+        if not data or not data.get(f'{region}_audio'):
+            return
+        self._audio_id += 1
+        token = self._audio_id
+        self.log(f'Loading {region.upper()} pronunciation…')
+        def ready(content):
+            if token != self._audio_id or self.current_scraped_data is not data:
+                return
             try:
-                audio_data = io.BytesIO(engine.download_audio(url, headers))
                 if not pygame.mixer.get_init():
                     pygame.mixer.init()
-                pygame.mixer.music.load(audio_data)
+                self._audio_stream = io.BytesIO(content)
+                pygame.mixer.music.load(self._audio_stream)
                 pygame.mixer.music.play()
-            except Exception as e:
-                self.log(f"[!] Audio Playback Error: {e}")
+                self.log(f'Playing {region.upper()} pronunciation.')
+            except pygame.error as error:
+                self.log(f'Audio playback failed: {error}')
+        def failed(error):
+            if token == self._audio_id:
+                self.log(f'Audio download failed: {error}')
+        url, headers = data[f'{region}_audio'], data.get('headers', {})
+        self.run_task(lambda: engine.download_audio(url, headers), ready, failed)
 
     def log(self, message):
         self.status_label.configure(text=message)
@@ -512,7 +813,7 @@ class AnkiAutomataApp(ctk.CTk):
         self.update_idletasks()
 
     def reset_editor(self, message="Search a word, or highlight text in your PDF and use your shortcut."):
-        self.word_header.configure(text="A word worth remembering.")
+        self.word_header.configure(text='Look up a word.' if self._compact else 'A word worth remembering.')
         self.def_area.delete("0.0", tk.END)
         self.def_area.insert("0.0", message)
         self.ex_area.delete("0.0", tk.END)
@@ -568,6 +869,8 @@ class AnkiAutomataApp(ctk.CTk):
             self.apply_group(0)
 
     def apply_group(self, group_choice):
+        if self._exporting:
+            return
         if not self.current_scraped_data: return
         groups = self.current_scraped_data.get('groups', [])
         
@@ -619,6 +922,7 @@ class AnkiAutomataApp(ctk.CTk):
         self.adjust_def_area_height()
 
     def on_sense_changed(self, choice):
+        self.schedule_autosave()
         if choice == "All meanings & examples":
             self.apply_group("all")
         else:
@@ -629,6 +933,7 @@ class AnkiAutomataApp(ctk.CTk):
                 self.apply_group(0)
 
     def load_all_examples(self):
+        self.schedule_autosave()
         if not self.current_scraped_data: return
         all_ex = self.current_scraped_data.get('examples_raw', [])
         if all_ex:
@@ -663,146 +968,112 @@ class AnkiAutomataApp(ctk.CTk):
         self.search_word()
 
     def search_word(self, manual_url=None):
+        if self._exporting:
+            return
+        word = ' '.join(self.word_var.get().split())
+        if not word:
+            return
+        self.save_draft()
+        self._search_id += 1
+        self._audio_id += 1
+        token = self._search_id
         deck = self.deck_var.get().strip()
-        word = self.word_var.get().strip()
-        
-        if not word: return
-            
-        self.add_btn.configure(state="disabled")
-        self.reset_audio_ui()
         self.current_scraped_data = None
-        self.reset_editor("Searching Cambridge Dictionary...")
-        self.log(f"Searching '{word}'...")
-        self.update_idletasks()
-        
-        try:
-            if engine.is_duplicate(word, deck):
-                self.log(f"[!] Warning: '{word}' exists in '{deck}'.")
-                self.reset_editor(f"⚠️ '{word}' is already in your Anki deck!")
-                return
-        except Exception as e:
-            self.log(f"[!] Anki Error: {e}")
-            self.reset_editor("⚠️ Ensure Anki is open and AnkiConnect is installed.")
-            return
-
-        try:
+        self.set_duplicates([])
+        self.reset_audio_ui()
+        self.reset_editor('Searching Cambridge Dictionary…')
+        self.set_searching(True)
+        self.log(f'Looking up {word}…')
+        def lookup():
             data = engine.scrape_cambridge(word, manual_url)
-        except requests.RequestException as e:
-            self.log(f"[!] Dictionary Error: {e}")
-            self.reset_editor("Could not reach Cambridge Dictionary. Please try again.")
+            duplicates, anki_error = [], None
+            if data:
+                try:
+                    duplicates = engine.find_duplicate_notes(word, deck)
+                except Exception as error:
+                    anki_error = str(error)
+            return data, duplicates, anki_error
+        self.run_task(lookup,
+            lambda result: self.lookup_finished(token, word, manual_url, result),
+            lambda error: self.lookup_failed(token, error))
+
+    def search_manual_url(self):
+        if self._exporting:
             return
-        
-        if not data and not manual_url:
-            dialog = ctk.CTkInputDialog(text=f"Could not find '{word}'.\nPaste direct Cambridge URL:", title="Manual Entry")
-            url_input = dialog.get_input()
-            if url_input: self.search_word(manual_url=url_input.strip())
-            else: self.reset_editor("Search canceled.")
+        dialog = ctk.CTkInputDialog(text='Paste a direct Cambridge Dictionary URL:', title='Find another entry')
+        url = dialog.get_input()
+        if url and not self._closing:
+            self.search_word(manual_url=url.strip())
+
+    def lookup_failed(self, token, error):
+        if token != self._search_id:
             return
-            
+        self.set_searching(False)
+        self.reset_editor('Could not reach Cambridge Dictionary. Please try again.')
+        self.log(f'Dictionary lookup failed: {error}')
+
+    def lookup_finished(self, token, word, manual_url, result):
+        if token != self._search_id:
+            return
+        self.set_searching(False)
+        data, duplicates, anki_error = result
         if not data:
-            self.log(f"[!] Skipped '{word}'. No data found.")
-            self.reset_editor("No definition found.")
+            self.reset_editor('No entry found. Try another spelling or choose Use URL.')
+            self.log(f'No entry found for {word}. You can paste a direct dictionary link with Use URL.')
             return
-            
         self.current_scraped_data = data
-        
-        if data['uk_audio']:
-            self.uk_btn.configure(state="normal")
-            self.uk_ipa_label.configure(text=data['uk_ipa'])
-        if data['us_audio']:
-            self.us_btn.configure(state="normal")
-            self.us_ipa_label.configure(text=data['us_ipa'])
-        if not data.get(f"{self.audio_choice.get()}_audio"):
-            if data['uk_audio']:
-                self.audio_choice.set("uk")
-            elif data['us_audio']:
-                self.audio_choice.set("us")
-        
         self.populate_editor(data, word)
-        self.add_btn.configure(state="normal")
-        count = len(data.get('groups', []))
-        self.log(f"Found {count} meaning group{'s' if count != 1 else ''}. Select meaning, edit if needed, then Confirm.")
+        self.update_audio_ui()
+        self.set_duplicates(duplicates)
+        if duplicates:
+            self.log('Existing card found. Open it in Anki to review, or choose another deck.')
+        elif anki_error:
+            self.log(f'Dictionary ready. Start Anki before adding. {anki_error}')
+        else:
+            count = len(data.get('groups', []))
+            self.log(f'{count} meaning group{"s" if count != 1 else ""} · Review your card, then add it to Anki.')
+        self.save_draft()
+
+    def set_exporting(self, value):
+        self._exporting = value
+        for widget in (self.word_entry, self.def_area, self.ex_area, self.sentence_text,
+                       self.search_btn, self.deck_btn, self.history_btn, self.manual_btn):
+            widget.configure(state='disabled' if value else 'normal')
+        self.sense_menu.configure(state='disabled' if value else 'normal')
+        self.add_btn.configure(text='Adding…' if value else 'Add to Anki')
+        self.refresh_add_state()
 
     def confirm_and_add(self):
-        if not self.current_scraped_data: return
-            
-        deck = self.deck_var.get().strip()
-        data = self.current_scraped_data
-        word = data['word']
-        sentence = self.sentence_text.get("1.0", tk.END).strip()
-        region = self.audio_choice.get()
-        
-        target_audio_url = data.get(f"{region}_audio")
-        target_ipa = data.get(f"{region}_ipa") or ""
-        
-        edited_definition = self.def_area.get("1.0", tk.END).strip()
-        edited_examples = self.ex_area.get("1.0", tk.END).strip()
-        separator = engine.config['templates']['example_separator']
-        
-        self.log("Building Anki note...")
-        self.update_idletasks()
-        
-        audio_filename = f"ankiautomata_{region}_{word.replace(' ', '_')}.mp3"
-        audio_tag = ""
-        if target_audio_url:
-            try:
-                audio_bytes = engine.download_audio(target_audio_url, data['headers'])
-                audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
-                audio_filename = engine.invoke_anki('storeMediaFile', filename=audio_filename, data=audio_base64)
-                audio_tag = f"[sound:{audio_filename}]"
-            except Exception as e:
-                self.log(f"[!] Audio save error: {e}")
-        
-        bolded_definition = engine.bold_word(word, edited_definition)
-        bolded_examples = engine.bold_word(word, edited_examples)
-        
-        def_lines = bolded_definition.replace('\r\n', '\n').split('\n')
-        html_def_lines = []
-        for line in def_lines:
-            m = re.match(r'^( +)', line)
-            if m:
-                indent = '&nbsp;' * (len(m.group(1)) * 2)
-                html_def_lines.append(indent + line[len(m.group(1)):])
-            else:
-                html_def_lines.append(line)
-        bolded_definition_html = '<br>'.join(html_def_lines)
-        
-        bolded_examples_html = bolded_examples.replace('\r\n', '\n').replace('\n', separator)
-        
-        front_html = engine.config['templates']['front'].format(word=escape(word))
-        highlighted_sentence = engine.format_sentence(word, sentence)
-        back_html = engine.config['templates']['back_layout'].format(
-            definition=bolded_definition_html, 
-            examples=bolded_examples_html
-        )
-        
-        note = {
-            "deckName": deck,
-            "modelName": engine.config['anki']['model_name'],
-            "fields": {
-                "Front": front_html,
-                "Example sentence": highlighted_sentence,
-                "Pronounciation": f"{target_ipa} {audio_tag}",
-                "Back": back_html
-            },
-            "options": {"allowDuplicate": False},
-            "tags": engine.config['anki']['tags']
-        }
-        
-        try:
-            engine.invoke_anki('addNote', note=note)
-            self.log(f"[+] SUCCESS! Added '{word}' ({region.upper()}).")
-            
-            self.word_var.set("")
-            self.sentence_text.delete("1.0", tk.END)
-            self.reset_editor("Ready for next word...")
-            self.add_btn.configure(state="disabled")
-            self.reset_audio_ui()
+        if not self.current_scraped_data or self._exporting or self._searching or self._duplicate_notes:
+            return
+        snapshot = self.snapshot()
+        if not snapshot['definition'].strip():
+            self.log('Add a definition before saving the card.')
+            return
+        self.save_draft()
+        self.set_exporting(True)
+        self.log(f'Adding {snapshot["word"]} to Anki…')
+        def done(result):
+            self.set_exporting(False)
+            if result.get('duplicates'):
+                self.set_duplicates(result['duplicates'])
+                self.log('This word was already added. Open the existing card in Anki.')
+                return
             self.current_scraped_data = None
-            self.word_entry.focus()
-            
-        except Exception as e:
-            self.log(f"[!] Failed to add note: {e}")
+            self._audio_id += 1
+            self.word_var.set('')
+            self.sentence_text.delete('1.0', 'end')
+            self.reset_editor('Ready for your next discovery.')
+            self.reset_audio_ui()
+            self.refresh_add_state()
+            self.save_draft()
+            warnings = result.get('warnings', [])
+            self.log(f'Added {snapshot["word"]} to {snapshot["deck"]}.' + (' ' + ' '.join(warnings) if warnings else ''))
+            self.word_entry.focus_set()
+        def failed(error):
+            self.set_exporting(False)
+            self.log(f'Could not add the card. Your draft is safe. {error}')
+        self.run_task(lambda: engine.export_note(snapshot), done, failed)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Cambridge Dictionary to Anki')

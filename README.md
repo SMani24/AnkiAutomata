@@ -1,115 +1,66 @@
-# AnkiAutomata ⚙️
+# AnkiAutomata
 
-AnkiAutomata is a modern desktop GUI and background automation client designed to instantly bridge the gap between your reading workflow and your Anki database.
+A focused desktop workspace for turning words from your reading into Anki cards. Select a word in your PDF, press **Ctrl+Alt+W**, choose its meaning, and add the card with Cambridge definitions, examples, IPA, and UK or US audio.
 
-Built with CustomTkinter, it captures target words directly from your clipboard or OS hotkeys, scrapes definitions, guidewords, examples, and native UK/US audio from Cambridge Dictionary, and formats clean, bolded HTML flashcards straight into your Anki decks via AnkiConnect.
+![AnkiAutomata dark editor](docs/editor-dark.png)
 
----
+<details>
+<summary>Light theme and compact mode</summary>
 
-## ✨ Features
+![Light editor](docs/editor-light.png)
 
-### 📖 Intelligent Scraping & Semantic Grouping
+![Compact lookup window](docs/compact.png)
 
-* **Comprehensive Multi-Sense Extraction:** Scrapes all definitions and examples across the Cambridge Dictionary without arbitrary truncation limits.
-* **Semantic Sense Grouping:** Automatically groups related definitions that share the same Part of Speech and Guideword (e.g., `[noun] (CONTAINER)` or `[noun] (LOW POINT)`), formatting distinct sub-senses as nested lettered lists (`a.`, `b.`, `c.`).
-* **Interactive Sense Selector:** Choose between specific numbered meaning groups via a dropdown or select **"📚 All Meanings & Examples"** to merge every sense into a structured card.
-* **Smart Deduplication:** Filters out redundant dictionary entries from secondary on-page learner/business glossaries while checking Anki in real time to prevent duplicate cards.
+</details>
 
+## Features
 
+- **Selected-text shortcut:** searches highlighted words or phrases without changing your clipboard; opens the app if it is closed.
+- **Focused editor:** warm light and charcoal dark themes, a teal accent, adjustable text sizes, and a collapsible activity log. Preferences live in Settings.
+- **Responsive lookups:** dictionary requests, duplicate checks, audio downloads, deck loading, and exports run in the background. Results from older searches cannot overwrite your latest lookup.
+- **Compact mode:** a smaller window for reading beside a PDF. Switch back to the full editor to work with sentence context and additional controls; your edits stay intact.
+- **Useful duplicate handling:** compares the exact rendered Front field for the configured note type in the selected deck and its subdecks. Existing cards get a preview and an **Open in Anki** action. Matches inside examples or longer words do not block a lookup, and duplicates are checked again before exporting.
+- **Recent lookups and recovery:** the twenty most recent words retain their edited definitions, examples, sentence, meaning selection, deck, and audio choice. Drafts autosave after a short typing pause and recover when you reopen the app.
+- **Cambridge meanings:** extracts definitions and examples, groups related senses by part of speech and guideword, and lets you select one group or combine them all.
+- **Pronunciation:** UK and US IPA and audio previews, plus media uploads through AnkiConnect. A missing regional recording falls back to an available one.
+- **Editable card content:** preserves line breaks, indentation, and highlighted target words while escaping plain text correctly for Anki HTML.
 
-### 🖥️ Modern, Adaptive GUI
+## Installation
 
-* **Dual-Axis Resizable Splitters:**
-* **Horizontal Splitter:** Drag the splitter bar between the **Definition** and **Examples** panes to customize editor proportions. Features a smart auto-shrink engine that automatically contracts the definition box for short definitions while respecting your preferred maximum height.
-* **Vertical Splitter:** Drag the divider between the left control panel and the right dictionary editor to set custom column proportions.
+You need Python 3.10+, Tkinter, and Anki Desktop with the [AnkiConnect add-on](https://ankiweb.net/shared/info/2055492159). In Anki, use **Tools → Add-ons → Get Add-ons**, enter `2055492159`, and restart Anki.
 
-
-* **Dynamic Text Scaling:** Scale UI typography on the fly between **Normal (100%)**, **Medium (115%)**, **Large (130%)**, and **XL (145%)**.
-* **Fixed-Padding Geometry:** Column containers resize cleanly across full-screen and compact window layouts without excessive gaps between cards.
-* **Persistent Preferences:** Automatically saves window dimensions, vertical and horizontal splitter positions, preferred text scale, last-used deck, auto-combine preferences, and audio region to `config.json`.
-
-### 🔊 Audio & Card Formatting
-
-* **Dual-Region Audio & IPA:** Scrapes UK and US phonetic IPA alongside direct MP3 pronunciations.
-
-
-* **In-Memory Audio Preview:** Listen to UK and US native pronunciations inside the app prior to export.
-
-
-* **Automated Media Sync:** Selected audio is encoded in Base64 and stored directly into Anki's media collection via AnkiConnect (`storeMediaFile`).
-
-
-* **Clean Anki HTML:** Converted newlines (`<br>`) and sub-definition indentation (`&nbsp;`) prevent card styling issues in Anki, while preserving custom target-word bolding and sentence highlights.
-
-
-
-### ⚡ Seamless OS Integration & Productivity
-
-* **Search Selected PDF Text:** Highlight a word or phrase and press **Ctrl+Alt+W** on Linux. The shortcut captures the selection without changing your clipboard, opens or focuses AnkiAutomata, and searches immediately.
-* **Global Shortcut Listener (IPC):** A local server (`127.0.0.1:24536`) accepts selected-text lookups and the original clipboard trigger.
-
-
-* **Fast Window Close:** Use `Ctrl+W` (or `Cmd+W` on macOS) to instantly dismiss the window from any focused element while persisting all layout geometry.
-* **Hierarchical Deck Selector:** Interactive tree-view modal for selecting nested sub-decks separated by `::`.
-
-
-
----
-
-## 📋 Prerequisites
-
-1. **Python 3.10+** installed on your machine.
-2. **Anki Desktop** running locally.
-
-
-3. **AnkiConnect Add-on** installed in Anki:
-
-
-* In Anki, navigate to **Tools > Add-ons > Get Add-ons...**
-
-* Enter add-on code: `2055492159`
-
-* Restart Anki (AnkiConnect listens by default at `[http://127.0.0.1:8765](http://127.0.0.1:8765)`).
-
-
-
-
-
----
-
-## 🚀 Installation
-
-1. Clone the repository:
 ```bash
 git clone https://github.com/SMani24/AnkiAutomata.git
 cd AnkiAutomata
-
-```
-
-
-2. Create and activate a virtual environment:
-```bash
 python3 -m venv envAnkiAutomata
-source envAnkiAutomata/bin/activate  # On Windows: envAnkiAutomata\Scripts\activate
-
+source envAnkiAutomata/bin/activate
+pip install customtkinter requests beautifulsoup4 pyperclip pygame
 ```
 
+On Windows, activate the environment with `envAnkiAutomata\Scripts\activate`. Linux distributions may package Tkinter separately, for example `sudo apt install python3-tk`.
 
-3. Install required dependencies:
-
+Keep Anki Desktop running, configure the note type below, and launch:
 
 ```bash
-pip install customtkinter requests beautifulsoup4 pyperclip pygame
-
+python main.py
 ```
 
+Audio playback initializes the audio device only when requested. You can browse and edit dictionary results while Anki is offline; Anki must be available when adding cards.
 
+## Card configuration
 
----
+`config.json` is loaded beside `engine.py`, regardless of the directory from which you launch the app. Configure your AnkiConnect URL, default deck, note type, tags, scraper settings, and HTML templates there.
 
-## ⚙️ Configuration (`config.json`)
+The configured note type must provide these fields, with these exact names:
 
-Configure your card model, deck, field names, and card layout templates in `config.json`. Ensure `"model_name"` and `"fields"` in `main.py` align with your active Anki Note Type.
+| Field | Content |
+| --- | --- |
+| `Front` | Target word |
+| `Example sentence` | Your sentence with the word highlighted |
+| `Pronounciation` | IPA and audio; the spelling is retained for existing note types |
+| `Back` | Definitions and examples |
+
+The field mapping is in `engine.build_note`. For example, the Anki section can be:
 
 ```json
 {
@@ -118,117 +69,76 @@ Configure your card model, deck, field names, and card layout templates in `conf
     "default_deck": "English::Vocabulary",
     "model_name": "English words",
     "tags": ["AnkiAutomata"]
-  },
-  "scraper": {
-    "base_url": "https://dictionary.cambridge.org/dictionary/english/",
-    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-  },
-  "templates": {
-    "front": "<b>{word}</b>",
-    "highlight_open_tag": "<b style=\"color:#e63946;\">",
-    "highlight_close_tag": "</b>",
-    "example_bullet": "• {example}",
-    "example_separator": "<br><br>",
-    "back_layout": "<div style=\"text-align: left;\"><b>Meaning:</b> {definition}<br><br>{examples}</div>"
-  },
-  "preferences": {
-    "font_scale": "Normal (100%)",
-    "auto_all_meanings": false,
-    "audio_choice": "uk",
-    "selected_deck": "English::Vocabulary",
-    "window_width": 1040,
-    "window_height": 720,
-    "user_def_height": 120,
-    "user_left_width": 380
   }
 }
-
 ```
 
-> **Note:** The `"preferences"` object is generated and maintained automatically by the application as you interact with the UI.
+Keep the existing `scraper` and `templates` sections when editing this file. The app maintains `preferences` automatically, including theme, font size, selected deck, audio region, window dimensions, definition height, and compact mode. Saves replace the file only after writing succeeds.
 
----
+Drafts and history are stored separately at `~/.local/state/AnkiAutomata/state.json`, or under `$XDG_STATE_HOME/AnkiAutomata` when that variable is set. They stay local and are not written into the repository or `config.json`.
 
-## 💻 Usage
+## Search selected PDF text
 
-1. Launch Anki desktop.
-2. Start the application:
-
+On GNOME or Pop!_OS, install or repair the desktop shortcut once with the virtual environment activated:
 
 ```bash
-python3 main.py
-
-```
-
-
-3. **Manual Entry:** Type a word into the target word box and press **Enter** (or click 🔍).
-
-
-4. **Sentence Context (Optional):** Paste a sentence containing the word into the **Sentence** box. The word will be highlighted automatically when added to Anki.
-
-
-5. **Review & Edit:**
-* Pick a definition group from the dropdown or toggle **Auto-combine All**.
-
-
-* Edit definitions or examples directly inside the text editors.
-
-
-* Press **Enter** in the examples editor to add a new bullet point (`• `) automatically.
-
-
-* Drag the horizontal or vertical splitters to re-apportion editor and panel sizes.
-
-
-6. **Audio & Export:**
-* Click **▶ UK Play** or **▶ US Play** to audition the pronunciations.
-
-
-* Select your preferred audio track radio button and click **➕ Confirm & Add to Anki**.
-
-
-
-
-
----
-
-## ⚡ Search selected text with a shortcut
-
-On GNOME or Pop!_OS, activate your virtual environment and install the desktop shortcut once:
-
-```bash
-source envAnkiAutomata/bin/activate
 python shortcut.py --install
 ```
 
-This registers **Ctrl+Alt+W**, or repairs an existing **AnkiAutomata Search** shortcut while preserving its key combination and other desktop shortcuts. Run it again if you move the repository or virtual environment. Restart AnkiAutomata after updating the code.
+The installer registers **Ctrl+Alt+W**, or repairs an existing **AnkiAutomata Search** shortcut while preserving its key combination and other shortcuts. Run it again if you move the repository or environment. Restart AnkiAutomata after updating the code.
 
 1. Keep Anki Desktop running with AnkiConnect enabled.
-2. Highlight a word or short phrase in your PDF reader (or another application that exposes its text selection).
-3. Press **Ctrl+Alt+W**. AnkiAutomata opens or comes to the foreground and searches the selected text. You do not need to press **Ctrl+C**; your clipboard is preserved.
+2. Highlight a word or short phrase in your PDF reader.
+3. Press **Ctrl+Alt+W**. AnkiAutomata opens or comes forward and searches your selection. You do not need to copy first.
 
-The helper uses `xclip` on X11 and `wl-paste` on Wayland. Install the appropriate package if needed (`sudo apt install xclip` or `sudo apt install wl-clipboard`). Wayland selection support depends on the compositor and PDF reader. Scanned PDFs need a selectable text layer.
+The helper uses `xclip` on X11 and `wl-paste` on Wayland. Install the appropriate package if needed (`sudo apt install xclip` or `sudo apt install wl-clipboard`). Wayland support depends on the compositor and PDF reader. Scanned PDFs need a selectable text layer.
 
-For another Linux desktop, add a custom shortcut in Keyboard Settings whose command uses the absolute paths to your virtual environment's Python and `shortcut.py`. To check the selection helper manually, highlight text and run `python shortcut.py`.
+On another Linux desktop, add a custom shortcut in Keyboard Settings using the absolute paths to your environment's Python and `shortcut.py`. You can test the helper manually by highlighting text and running `python shortcut.py`.
 
-### Existing clipboard trigger
+## Editing and keyboard shortcuts
 
-You can still copy a word with **Ctrl+C** and trigger an already running AnkiAutomata instance using:
+Type a word or phrase and press Enter or Search. Select a meaning, edit the definition and examples, and optionally add your own sentence. **Use URL** accepts a direct Cambridge Dictionary link when a normal lookup does not find the intended entry. Drag the divider between definitions and examples to adjust the definition height.
+
+**Settings** controls appearance, text size, default meaning combination, and pronunciation region. **Recent lookups** restores a previous word with your edits. **Activity** opens the detailed log.
+
+| Shortcut | Action |
+| --- | --- |
+| Ctrl+Alt+W | Search the selection from your PDF; requires the desktop shortcut |
+| Ctrl+L | Focus and select the search field |
+| Ctrl+Enter | Add the reviewed card to Anki |
+| Ctrl+Shift+M | Switch between compact mode and the full editor |
+| Escape in compact mode | Minimize the window to return to your reader |
+| Ctrl+W / Cmd+W | Save the current draft and close the app |
+| Enter in the examples editor | Insert another example bullet |
+
+During an export, edits are temporarily disabled so the saved card matches what you reviewed. A failed export leaves the draft intact. If audio cannot be saved, the note is added without the recording and the status reports the audio failure.
+
+## Local trigger API
+
+The original clipboard trigger still works with an already running instance:
 
 ```bash
 curl -s http://127.0.0.1:24536/
 ```
 
-Other applications can submit selected text with a UTF-8 JSON `POST` to `http://127.0.0.1:24536/lookup`, for example `{"text": "retrospect"}`. Requests are queued for the GUI thread; selections are limited to 4 KB.
+Other applications can submit UTF-8 JSON to `POST http://127.0.0.1:24536/lookup`, for example `{"text": "retrospect"}`. The server listens only on loopback, queues requests for the GUI thread, and limits selected-text requests to 4 KB. Shortcut requests received during an export wait until it finishes.
 
 ## Development checks
 
-Run the offline regression suite from the repository root with the virtual environment activated:
+Run the regression suite from the repository root:
 
 ```bash
 python -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
-These tests use mocked external responses and a temporary loopback HTTP server. They do not require Anki, Cambridge access, an audio device, or a desktop display. `tests/ankil_test.py` and `tests/scraper_test.py` are manual integration scripts; running the Anki script explicitly creates a note in your local collection.
+These tests mock external services and use a temporary loopback HTTP server. They require no Anki instance, Cambridge access, audio device, or desktop display.
 
-The application loads `config.json` beside `engine.py`, so launching `main.py` from another working directory also works. Preference saves replace the config file only after writing succeeds. Network requests have connection and read timeouts, and audio playback initializes the device only when requested.
+Optional GUI smoke checks exercise actual widgets, asynchronous searches, compact mode, export callbacks, and draft recovery. Run them on a desktop or with Xvfb installed:
+
+```bash
+xvfb-run -a python tests/gui_smoke.py
+```
+
+The GUI checks use isolated temporary state and mocked Anki operations. `tests/ankil_test.py` and `tests/scraper_test.py` are older manual integration scripts; explicitly running the Anki script creates a real note in your collection.
+
+The main components are `main.py` (UI), `engine.py` (scraping and Anki), `background.py` (worker tasks), `storage.py` (drafts/history), `ipc.py` (local request server), `shortcut.py` (desktop integration), and `theme.json` (widget theme).

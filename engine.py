@@ -3,6 +3,7 @@ import json
 import re
 import os
 import tempfile
+import base64
 from html import escape
 from pathlib import Path
 from urllib.parse import quote, urljoin
@@ -67,9 +68,88 @@ def get_anki_decks():
         return [config['anki']['default_deck']]
 
 def is_duplicate(word, deck_name):
-    query = f'deck:"{deck_name}" "{word}"'
-    existing_notes = invoke_anki('findNotes', query=query)
-    return len(existing_notes) > 0
+    return bool(find_duplicate_notes(word, deck_name))
+
+def _plain_text(html):
+    return ' '.join(BeautifulSoup(html, 'html.parser').get_text().split())
+
+def _search_term(field, value):
+    # Quote the whole search term and treat wildcard characters literally.
+    value = value.replace('\\', '\\\\').replace('"', '\\"').replace('*', '\\*').replace('_', '\\_')
+    return f'"{field}:{value}"'
+
+def find_duplicate_notes(word, deck_name):
+    front = _plain_text(config['templates']['front'].format(word=escape(word)))
+    query = ' '.join((_search_term('deck', deck_name),
+                      _search_term('note', config['anki']['model_name']),
+                      _search_term('Front', front)))
+    ids = invoke_anki('findNotes', query=query)
+    if not ids:
+        return []
+    # Verify actual field values too: example sentences and partial words are not duplicates.
+    notes = invoke_anki('notesInfo', notes=ids)
+    return [note for note in notes
+            if _plain_text(note.get('fields', {}).get('Front', {}).get('value', '')).casefold()
+            == front.casefold()]
+
+def open_notes(notes):
+    query = ' or '.join(f'nid:{int(note["noteId"])}' for note in notes)
+    if query:
+        return invoke_anki('guiBrowse', query=query)
+
+def note_preview(note):
+    return _plain_text(note.get('fields', {}).get('Back', {}).get('value', ''))[:160]
+
+def build_note(snapshot, audio_filename=''):
+    """Build HTML from an immutable snapshot captured on the GUI thread."""
+    word = snapshot['word']
+    region = snapshot.get('audio', 'uk')
+    data = snapshot.get('data') or {}
+    definition = bold_word(word, snapshot['definition']).replace('\r\n', '\n')
+    lines = []
+    for line in definition.split('\n'):
+        indentation = len(line) - len(line.lstrip(' '))
+        lines.append('&nbsp;' * (indentation * 2) + line[indentation:])
+    examples = bold_word(word, snapshot['examples']).replace('\r\n', '\n').replace(
+        '\n', config['templates']['example_separator'])
+    audio = f'[sound:{audio_filename}]' if audio_filename else ''
+    return {
+        'deckName': snapshot['deck'],
+        'modelName': config['anki']['model_name'],
+        'fields': {
+            'Front': config['templates']['front'].format(word=escape(word)),
+            'Example sentence': format_sentence(word, snapshot.get('sentence', '')),
+            'Pronounciation': f'{data.get(f"{region}_ipa") or ""} {audio}'.strip(),
+            'Back': config['templates']['back_layout'].format(definition='<br>'.join(lines), examples=examples)
+        },
+        'options': {'allowDuplicate': False, 'duplicateScope': 'deck',
+                    'duplicateScopeOptions': {'deckName': snapshot['deck'], 'checkChildren': True,
+                                              'checkAllModels': False}},
+        'tags': config['anki']['tags']
+    }
+
+def export_note(snapshot):
+    """Recheck duplicates before storing media or creating a note."""
+    duplicates = find_duplicate_notes(snapshot['word'], snapshot['deck'])
+    if duplicates:
+        return {'duplicates': duplicates}
+    data = snapshot.get('data') or {}
+    region = snapshot.get('audio', 'uk')
+    url = data.get(f'{region}_audio')
+    filename = ''
+    warnings = []
+    if url:
+        try:
+            content = download_audio(url, data.get('headers', {}))
+            safe_word = re.sub(r'[^\w.-]+', '_', snapshot['word'])[:80]
+            filename = invoke_anki('storeMediaFile', filename=f'ankiautomata_{region}_{safe_word}.mp3',
+                                   data=base64.b64encode(content).decode('ascii'))
+        except Exception as error:
+            warnings.append(f'Audio could not be saved: {error}')
+    note_id = invoke_anki('addNote', note=build_note(snapshot, filename))
+    if note_id is None:
+        raise ValueError('AnkiConnect did not return a new note ID')
+    return {'note_id': note_id, 'warnings': warnings}
 
 def format_sentence(word, sentence):
     open_tag = config['templates']['highlight_open_tag']

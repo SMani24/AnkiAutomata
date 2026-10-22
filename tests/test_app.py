@@ -7,7 +7,6 @@ import requests
 
 import engine
 
-# Importing the UI must not require a working audio device.
 with patch('pygame.mixer.init', side_effect=RuntimeError('no audio device')) as mixer_init:
     from main import AnkiAutomataApp
     AUDIO_INITIALIZED_ON_IMPORT = mixer_init.called
@@ -20,29 +19,68 @@ class AppTests(unittest.TestCase):
         app.deck_var.get.return_value = 'Default'
         app.audio_choice.get.return_value = 'us'
         app.lookup_requests = Queue()
+        app._exporting = False
+        app._searching = False
+        app._closing = False
+        app._compact = False
+        app._duplicate_notes = []
+        app._search_id = 1
+        app._audio_id = 1
         return app
 
     def test_import_does_not_initialize_audio(self):
         self.assertFalse(AUDIO_INITIALIZED_ON_IMPORT)
 
-    @patch.object(engine, 'scrape_cambridge', side_effect=requests.Timeout('timed out'))
-    @patch.object(engine, 'is_duplicate', return_value=False)
-    def test_dictionary_failure_leaves_add_disabled(self, duplicate, scrape):
-        app = self.make_app()
-        AnkiAutomataApp.search_word(app)
-        self.assertIsNone(app.current_scraped_data)
-        app.add_btn.configure.assert_called_once_with(state='disabled')
-        self.assertIn('Could not reach Cambridge', app.reset_editor.call_args.args[0])
-
     @patch.object(engine, 'scrape_cambridge')
-    @patch.object(engine, 'is_duplicate', return_value=False)
-    def test_falls_back_to_uk_when_us_audio_is_missing(self, duplicate, scrape):
+    def test_search_schedules_network_work_without_blocking_gui(self, scrape):
         app = self.make_app()
-        scrape.return_value = {'word': 'cat', 'uk_audio': '/uk.mp3', 'uk_ipa': '/cat/',
-                               'us_audio': None, 'us_ipa': '', 'groups': []}
         AnkiAutomataApp.search_word(app)
+        scrape.assert_not_called()
+        app.set_searching.assert_called_once_with(True)
+        app.run_task.assert_called_once()
+
+    @patch.object(engine, 'find_duplicate_notes', return_value=[])
+    @patch.object(engine, 'scrape_cambridge', return_value={'word': 'cat'})
+    def test_scheduled_lookup_uses_captured_word_and_deck(self, scrape, duplicates):
+        app = self.make_app()
+        AnkiAutomataApp.search_word(app)
+        operation = app.run_task.call_args.args[0]
+        app.word_var.get.return_value = 'dog'
+        app.deck_var.get.return_value = 'Other'
+        operation()
+        scrape.assert_called_once_with('cat', None)
+        duplicates.assert_called_once_with('cat', 'Default')
+
+    def test_dictionary_failure_leaves_add_disabled(self):
+        app = self.make_app()
+        app.current_scraped_data = None
+        AnkiAutomataApp.lookup_failed(app, 1, requests.Timeout('timed out'))
+        app.reset_editor.assert_called_once()
+        self.assertIsNone(app.current_scraped_data)
+        self.assertIn('lookup failed', app.log.call_args.args[0])
+
+    def test_old_lookup_result_cannot_replace_newer_word(self):
+        app = self.make_app()
+        app.current_scraped_data = {'word': 'newer'}
+        AnkiAutomataApp.lookup_finished(app, 0, 'old', None, ({'word': 'old'}, [], None))
+        self.assertEqual(app.current_scraped_data['word'], 'newer')
+        app.populate_editor.assert_not_called()
+
+    def test_dictionary_result_is_usable_when_anki_is_offline(self):
+        app = self.make_app()
+        data = {'word': 'cat', 'groups': []}
+        AnkiAutomataApp.lookup_finished(app, 1, 'cat', None, (data, [], 'connection refused'))
+        self.assertEqual(app.current_scraped_data, data)
+        app.populate_editor.assert_called_once_with(data, 'cat')
+        self.assertIn('Start Anki', app.log.call_args.args[0])
+        app.save_draft.assert_called_once()
+
+    def test_falls_back_to_uk_when_us_audio_is_missing(self):
+        app = self.make_app()
+        app.current_scraped_data = {'word': 'cat', 'uk_audio': '/uk.mp3', 'uk_ipa': '/cat/',
+                                    'us_audio': None, 'us_ipa': ''}
+        AnkiAutomataApp.update_audio_ui(app)
         app.audio_choice.set.assert_called_once_with('uk')
-        app.add_btn.configure.assert_called_with(state='normal')
 
     def test_clipboard_error_does_not_stop_trigger_polling(self):
         app = self.make_app()
@@ -58,7 +96,14 @@ class AppTests(unittest.TestCase):
         AnkiAutomataApp.check_triggers(app)
         app.process_text.assert_called_once_with('selected word')
         app.process_clipboard.assert_not_called()
-        app.after.assert_called_once_with(200, app.check_triggers)
+
+    def test_shortcut_waits_until_export_finishes(self):
+        app = self.make_app()
+        app._exporting = True
+        app.lookup_requests.put_nowait('selected word')
+        AnkiAutomataApp.check_triggers(app)
+        app.process_text.assert_not_called()
+        self.assertEqual(app.lookup_requests.get_nowait(), 'selected word')
 
     def test_empty_lookup_queue_keeps_polling(self):
         app = self.make_app()
@@ -82,32 +127,44 @@ class AppTests(unittest.TestCase):
         self.assertIn('Clipboard Error', app.log.call_args.args[0])
         app.search_word.assert_not_called()
 
-    @patch.object(engine, 'invoke_anki', return_value='renamed.mp3')
-    @patch.object(engine, 'download_audio', return_value=b'audio')
-    def test_export_escapes_front_and_uses_stored_media_filename(self, download, invoke):
+    def test_export_failure_preserves_editable_draft(self):
         app = self.make_app()
-        app.current_scraped_data = {'word': '<cat>', 'us_audio': '/us.mp3',
-                                    'us_ipa': '/cat/', 'headers': {}}
-        app.sentence_text.get.return_value = '<cat> & dog'
-        app.def_area.get.return_value = '<cat> < dog'
-        app.ex_area.get.return_value = '• <cat> & dog'
+        app.current_scraped_data = {'word': 'cat'}
+        app.snapshot.return_value = {'word': 'cat', 'definition': 'animal', 'deck': 'Default'}
         AnkiAutomataApp.confirm_and_add(app)
-        note = invoke.call_args.kwargs['note']
-        self.assertEqual(note['fields']['Front'], '<b>&lt;cat&gt;</b>')
-        self.assertEqual(note['fields']['Pronounciation'], '/cat/ [sound:renamed.mp3]')
-        self.assertIn('&lt; dog', note['fields']['Back'])
-        self.assertIn('&amp; dog', note['fields']['Example sentence'])
+        failure = app.run_task.call_args.args[2]
+        failure(RuntimeError('Anki offline'))
+        self.assertEqual(app.current_scraped_data['word'], 'cat')
+        app.set_exporting.assert_called_with(False)
+        app.reset_editor.assert_not_called()
+        self.assertIn('draft is safe', app.log.call_args.args[0])
 
-    @patch.object(engine, 'invoke_anki')
-    def test_export_without_ipa_does_not_insert_none(self, invoke):
+    def test_confirm_cannot_start_second_export(self):
         app = self.make_app()
-        app.current_scraped_data = {'word': 'cat', 'us_audio': None}
-        app.sentence_text.get.return_value = ''
-        app.def_area.get.return_value = 'animal'
-        app.ex_area.get.return_value = ''
+        app._exporting = True
         AnkiAutomataApp.confirm_and_add(app)
-        note = invoke.call_args.kwargs['note']
-        self.assertNotIn('None', note['fields']['Pronounciation'])
+        app.run_task.assert_not_called()
+
+    def test_duplicate_blocks_export_and_offers_existing_note(self):
+        app = self.make_app()
+        app.current_scraped_data = {'word': 'cat'}
+        app._duplicate_notes = [{'noteId': 42}]
+        AnkiAutomataApp.confirm_and_add(app)
+        app.run_task.assert_not_called()
+        AnkiAutomataApp.set_duplicates(app, [{'noteId': 42}])
+        app.duplicate_frame.grid.assert_called_once()
+
+    def test_restore_draft_reinstates_edits_and_rechecks_duplicates(self):
+        app = self.make_app()
+        snapshot = {'word': 'cat', 'definition': 'my definition', 'examples': 'my example',
+                    'sentence': 'my sentence', 'deck': 'Vocabulary', 'audio': 'uk',
+                    'data': {'word': 'cat'}, 'sense': '1. animal'}
+        AnkiAutomataApp.restore_snapshot(app, snapshot)
+        app.def_area.insert.assert_called_once_with('1.0', 'my definition')
+        app.ex_area.insert.assert_called_once_with('1.0', 'my example')
+        app.sentence_text.insert.assert_called_once_with('1.0', 'my sentence')
+        app.deck_var.set.assert_called_once_with('Vocabulary')
+        app.recheck_duplicates.assert_called_once()
 
     @patch('requests.post')
     def test_importing_manual_anki_script_does_not_add_note(self, post):
