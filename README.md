@@ -45,7 +45,8 @@ Built with CustomTkinter, it captures target words directly from your clipboard 
 
 ### ⚡ Seamless OS Integration & Productivity
 
-* **Global Shortcut Listener (IPC):** Runs a local background socket server (`127.0.0.1:24536`) that accepts external trigger pings (e.g., via `curl` bound to an OS hotkey), bringing the window to focus and searching the active clipboard contents immediately.
+* **Search Selected PDF Text:** Highlight a word or phrase and press **Ctrl+Alt+W** on Linux. The shortcut captures the selection without changing your clipboard, opens or focuses AnkiAutomata, and searches immediately.
+* **Global Shortcut Listener (IPC):** A local server (`127.0.0.1:24536`) accepts selected-text lookups and the original clipboard trigger.
 
 
 * **Fast Window Close:** Use `Ctrl+W` (or `Cmd+W` on macOS) to instantly dismiss the window from any focused element while persisting all layout geometry.
@@ -191,19 +192,34 @@ python3 main.py
 
 ---
 
-## ⚡ Global OS Shortcut Setup (Optional)
+## ⚡ Search selected text with a shortcut
 
-AnkiAutomata includes a built-in background IPC server on port `24536`. You can trigger automated word lookups from anywhere in your operating system:
+On GNOME or Pop!_OS, activate your virtual environment and install the desktop shortcut once:
 
-1. **Highlight** any word in a browser, document, or PDF reader and press your system copy shortcut (`Ctrl+C` or `Cmd+C`).
-2. Bind an OS-level hotkey (e.g., using system keyboard settings, AutoHotkey on Windows, or sxhkd on Linux) to execute:
 ```bash
-curl -s http://127.0.0.1:24536/
-
+source envAnkiAutomata/bin/activate
+python shortcut.py --install
 ```
 
+This registers **Ctrl+Alt+W**, or repairs an existing **AnkiAutomata Search** shortcut while preserving its key combination and other desktop shortcuts. Run it again if you move the repository or virtual environment. Restart AnkiAutomata after updating the code.
 
-3. AnkiAutomata will immediately come to the foreground, read the copied word from your clipboard, and perform the dictionary lookup automatically.
+1. Keep Anki Desktop running with AnkiConnect enabled.
+2. Highlight a word or short phrase in your PDF reader (or another application that exposes its text selection).
+3. Press **Ctrl+Alt+W**. AnkiAutomata opens or comes to the foreground and searches the selected text. You do not need to press **Ctrl+C**; your clipboard is preserved.
+
+The helper uses `xclip` on X11 and `wl-paste` on Wayland. Install the appropriate package if needed (`sudo apt install xclip` or `sudo apt install wl-clipboard`). Wayland selection support depends on the compositor and PDF reader. Scanned PDFs need a selectable text layer.
+
+For another Linux desktop, add a custom shortcut in Keyboard Settings whose command uses the absolute paths to your virtual environment's Python and `shortcut.py`. To check the selection helper manually, highlight text and run `python shortcut.py`.
+
+### Existing clipboard trigger
+
+You can still copy a word with **Ctrl+C** and trigger an already running AnkiAutomata instance using:
+
+```bash
+curl -s http://127.0.0.1:24536/
+```
+
+Other applications can submit selected text with a UTF-8 JSON `POST` to `http://127.0.0.1:24536/lookup`, for example `{"text": "retrospect"}`. Requests are queued for the GUI thread; selections are limited to 4 KB.
 
 ## Development checks
 
@@ -213,6 +229,6 @@ Run the offline regression suite from the repository root with the virtual envir
 python -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
-These tests use mocked network responses and do not require Anki, Cambridge access, an audio device, or a desktop display. `tests/ankil_test.py` and `tests/scraper_test.py` are manual integration scripts; running the Anki script explicitly creates a note in your local collection.
+These tests use mocked external responses and a temporary loopback HTTP server. They do not require Anki, Cambridge access, an audio device, or a desktop display. `tests/ankil_test.py` and `tests/scraper_test.py` are manual integration scripts; running the Anki script explicitly creates a note in your local collection.
 
 The application loads `config.json` beside `engine.py`, so launching `main.py` from another working directory also works. Preference saves replace the config file only after writing succeeds. Network requests have connection and read timeouts, and audio playback initializes the device only when requested.

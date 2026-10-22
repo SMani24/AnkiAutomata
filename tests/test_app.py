@@ -1,4 +1,5 @@
 import importlib
+from queue import Queue
 import unittest
 from unittest.mock import Mock, patch
 
@@ -18,6 +19,7 @@ class AppTests(unittest.TestCase):
         app.word_var.get.return_value = 'cat'
         app.deck_var.get.return_value = 'Default'
         app.audio_choice.get.return_value = 'us'
+        app.lookup_requests = Queue()
         return app
 
     def test_import_does_not_initialize_audio(self):
@@ -44,11 +46,32 @@ class AppTests(unittest.TestCase):
 
     def test_clipboard_error_does_not_stop_trigger_polling(self):
         app = self.make_app()
-        app.search_triggered = True
+        app.lookup_requests.put_nowait(None)
         app.process_clipboard.side_effect = RuntimeError('clipboard unavailable')
         with self.assertRaises(RuntimeError):
             AnkiAutomataApp.check_triggers(app)
         app.after.assert_called_once_with(200, app.check_triggers)
+
+    def test_selected_text_is_handled_on_gui_thread(self):
+        app = self.make_app()
+        app.lookup_requests.put_nowait('selected word')
+        AnkiAutomataApp.check_triggers(app)
+        app.process_text.assert_called_once_with('selected word')
+        app.process_clipboard.assert_not_called()
+        app.after.assert_called_once_with(200, app.check_triggers)
+
+    def test_empty_lookup_queue_keeps_polling(self):
+        app = self.make_app()
+        AnkiAutomataApp.check_triggers(app)
+        app.process_text.assert_not_called()
+        app.after.assert_called_once_with(200, app.check_triggers)
+
+    def test_selected_pdf_text_is_normalized_and_window_focused(self):
+        app = self.make_app()
+        AnkiAutomataApp.process_text(app, '  selected\n word  ')
+        app.word_var.set.assert_called_once_with('selected word')
+        app.focus_force.assert_called_once()
+        app.search_word.assert_called_once()
 
     @patch('main.pyperclip.paste')
     def test_clipboard_error_is_reported(self, paste):

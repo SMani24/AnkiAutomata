@@ -7,10 +7,12 @@ import base64
 import pyperclip
 import io
 import pygame
-import socket
+import argparse
+from queue import Empty, Queue
 import threading
 import re
 import engine
+from ipc import LookupServer
 
 ctk.set_appearance_mode("System")
 ctk.set_default_color_theme("blue")
@@ -81,7 +83,7 @@ class DeckSelectionDialog(ctk.CTkToplevel):
         self.destroy()
 
 class AnkiAutomataApp(ctk.CTk):
-    def __init__(self):
+    def __init__(self, initial_word=None):
         super().__init__()
             
         self.title("AnkiAutomata")
@@ -113,10 +115,8 @@ class AnkiAutomataApp(ctk.CTk):
         
         self._setup_fonts()
         
-        self.search_triggered = False
-        self.server_thread = threading.Thread(target=self.start_local_server, daemon=True)
-        self.server_thread.start()
-        self.check_triggers()
+        self.lookup_requests = Queue(maxsize=10)
+        self.lookup_server = None
             
         # Layout Columns: Col 0 (Left), Col 1 (Width Splitter), Col 2 (Right)
         self.grid_columnconfigure(0, weight=0, minsize=self.user_pref_left_width)
@@ -184,7 +184,7 @@ class AnkiAutomataApp(ctk.CTk):
         
         self.log_area = ctk.CTkTextbox(self.left_frame, height=90, font=self.fonts["log"], fg_color=("gray95", "gray10"))
         self.log_area.grid(row=3, column=0, sticky="sew", pady=(20, 0))
-        self.log_area.insert("0.0", "System ready. Highlight text and press Ctrl+Alt+W.\n")
+        self.log_area.insert("0.0", "Ready. Select text and use your AnkiAutomata desktop shortcut.\n")
         self.log_area.configure(state="disabled")
 
         # --- VERTICAL SPLITTER (Width Adjustment) ---
@@ -333,6 +333,11 @@ class AnkiAutomataApp(ctk.CTk):
         
         self.word_entry.bind('<Return>', lambda event: self.search_word())
         self.word_entry.focus()
+        self.server_thread = threading.Thread(target=self.start_local_server, daemon=True)
+        self.server_thread.start()
+        if initial_word:
+            self.lookup_requests.put_nowait(initial_word)
+        self.after(200, self.check_triggers)
 
     # --- Column Width Splitter Logic ---
     def _on_w_splitter_hover(self, entering):
@@ -430,6 +435,8 @@ class AnkiAutomataApp(ctk.CTk):
         self.def_area.configure(height=final_height)
 
     def on_closing(self, event=None):
+        if self.lookup_server is not None:
+            self.lookup_server.shutdown()
         try:
             w = self.winfo_width()
             h = self.winfo_height()
@@ -518,24 +525,23 @@ class AnkiAutomataApp(ctk.CTk):
 
     def check_triggers(self):
         try:
-            if self.search_triggered:
-                self.search_triggered = False
+            try:
+                text = self.lookup_requests.get_nowait()
+            except Empty:
+                return
+            if text is None:
                 self.process_clipboard()
+            else:
+                self.process_text(text)
         finally:
             self.after(200, self.check_triggers)
 
     def start_local_server(self):
-        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
-            server.bind(('127.0.0.1', 24536))
-            server.listen(1)
-            while True:
-                conn, addr = server.accept()
-                conn.sendall(b"HTTP/1.1 200 OK\r\n\r\nSuccess")
-                conn.close()
-                self.search_triggered = True
-        except Exception as e:
+            with LookupServer(self.lookup_requests) as server:
+                self.lookup_server = server
+                server.serve_forever(poll_interval=0.2)
+        except OSError as e:
             print(f"Local server error: {e}")
 
     def change_deck(self):
@@ -713,14 +719,19 @@ class AnkiAutomataApp(ctk.CTk):
         except pyperclip.PyperclipException as e:
             self.log(f"[!] Clipboard Error: {e}")
             return
-        if not clipboard_text: return
-        
+        self.process_text(clipboard_text)
+
+    def process_text(self, text):
+        text = ' '.join(text.split())
+        if not text: return
+
         self.deiconify()
         self.lift()
         self.attributes('-topmost', True)
         self.attributes('-topmost', False)
         
-        self.word_var.set(clipboard_text)
+        self.focus_force()
+        self.word_var.set(text)
         self.search_word()
 
     def search_word(self, manual_url=None):
@@ -866,5 +877,8 @@ class AnkiAutomataApp(ctk.CTk):
             self.log(f"[!] Failed to add note: {e}")
 
 if __name__ == "__main__":
-    app = AnkiAutomataApp()
+    parser = argparse.ArgumentParser(description='Cambridge Dictionary to Anki')
+    parser.add_argument('--lookup', help='search this word after opening the window')
+    args = parser.parse_args()
+    app = AnkiAutomataApp(initial_word=args.lookup)
     app.mainloop()
