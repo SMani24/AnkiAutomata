@@ -8,14 +8,22 @@ import pyperclip
 import io
 import pygame
 import argparse
+from pathlib import Path
 from queue import Empty, Queue
 import threading
 import re
 import engine
 from ipc import LookupServer
 
-ctk.set_appearance_mode("System")
-ctk.set_default_color_theme("blue")
+ctk.set_default_color_theme(str(Path(__file__).with_name('theme.json')))
+ctk.set_appearance_mode(engine.get_preference('appearance', 'System'))
+
+SURFACE = ('#FFFFFF', '#1C2825')
+FIELD = ('#F8FAF6', '#17221F')
+MUTED = ('#647874', '#98ABA5')
+BORDER = ('#DCE4DC', '#344740')
+ACCENT = ('#276B5B', '#70B69E')
+TEXT = ('#243B3A', '#E5EEEB')
 
 class DeckSelectionDialog(ctk.CTkToplevel):
     def __init__(self, parent, decks, current_deck, font=None):
@@ -35,18 +43,18 @@ class DeckSelectionDialog(ctk.CTkToplevel):
         mode = ctk.get_appearance_mode()
         
         if mode == "Dark":
-            bg_color = "#2b2b2b"
-            text_color = "#dce4ee"
-            sel_bg = "#1f538d"
+            bg_color = SURFACE[1]
+            text_color = TEXT[1]
+            sel_bg = "#35735F"
         else:
-            bg_color = "#ebebeb"
-            text_color = "#000000"
-            sel_bg = "#3b8ed0"
+            bg_color = SURFACE[0]
+            text_color = TEXT[0]
+            sel_bg = "#276B5B"
             
         style.theme_use("default")
         style.configure("Treeview", background=bg_color, foreground=text_color, 
                         fieldbackground=bg_color, borderwidth=0, rowheight=26)
-        style.map('Treeview', background=[('selected', sel_bg)])
+        style.map('Treeview', background=[('selected', sel_bg)], foreground=[('selected', 'white')])
 
         self.tree = ttk.Treeview(self, show="tree", selectmode="browse")
         self.tree.pack(expand=True, fill="both", padx=15, pady=(15, 5))
@@ -89,13 +97,13 @@ class AnkiAutomataApp(ctk.CTk):
         self.title("AnkiAutomata")
         
         saved_w = engine.get_preference('window_width', 1040)
-        saved_h = engine.get_preference('window_height', 720)
+        saved_h = engine.get_preference('window_height', 820)
         try:
             self.geometry(f"{saved_w}x{saved_h}")
         except Exception:
-            self.geometry("1040x720")
+            self.geometry("1040x820")
             
-        self.minsize(940, 590)
+        self.minsize(840, 720)
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         self.bind_all("<Control-w>", self.on_closing)
@@ -108,229 +116,148 @@ class AnkiAutomataApp(ctk.CTk):
         
         self.current_scraped_data = None
         self._is_dragging_splitter = False
-        self._is_dragging_w_splitter = False
         
         self.user_pref_def_height = engine.get_preference('user_def_height', 120)
-        self.user_pref_left_width = engine.get_preference('user_left_width', 380)
         
         self._setup_fonts()
         
         self.lookup_requests = Queue(maxsize=10)
         self.lookup_server = None
             
-        # Layout Columns: Col 0 (Left), Col 1 (Width Splitter), Col 2 (Right)
-        self.grid_columnconfigure(0, weight=0, minsize=self.user_pref_left_width)
-        self.grid_columnconfigure(1, weight=0)
-        self.grid_columnconfigure(2, weight=1)
-        self.grid_rowconfigure(0, weight=1)
-        
-        # --- LEFT COLUMN (Inputs & Log) ---
-        self.left_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.left_frame.grid(row=0, column=0, sticky="nsew", padx=(20, 0), pady=20)
-        self.left_frame.grid_columnconfigure(0, weight=1)
-        self.left_frame.grid_rowconfigure(2, weight=1) 
-        
-        self.header_frame = ctk.CTkFrame(self.left_frame, fg_color="transparent")
-        self.header_frame.grid(row=0, column=0, pady=(0, 15), sticky="ew")
-        
-        self.header = ctk.CTkLabel(self.header_frame, text="AnkiAutomata ⚙️", font=self.fonts["title"])
-        self.header.pack(side="left")
-        
-        scale_container = ctk.CTkFrame(self.header_frame, fg_color="transparent")
-        scale_container.pack(side="right")
-        
-        ctk.CTkLabel(scale_container, text="Text Size:", font=self.fonts["small"], text_color=("gray40", "gray70")).pack(side="left", padx=(0, 6))
-        self.scale_menu = ctk.CTkOptionMenu(
-            scale_container,
-            values=list(self.font_scale_factors.keys()),
-            command=self.on_font_scale_changed,
-            font=self.fonts["small"],
-            width=125,
-            height=28
-        )
-        self.scale_menu.set(self.current_scale_choice)
-        self.scale_menu.pack(side="left")
-        
-        self.input_card = ctk.CTkFrame(self.left_frame, corner_radius=15)
-        self.input_card.grid(row=1, column=0, sticky="ew")
-        self.input_card.grid_columnconfigure(1, weight=1)
-        
-        ctk.CTkLabel(self.input_card, text="🗂️ Deck:", font=self.fonts["label"], text_color=("gray30", "gray70")).grid(row=0, column=0, padx=15, pady=(20, 10), sticky="w")
-        deck_inner = ctk.CTkFrame(self.input_card, fg_color="transparent")
-        deck_inner.grid(row=0, column=1, padx=(0, 15), pady=(20, 10), sticky="ew")
-        deck_inner.grid_columnconfigure(0, weight=1)
-        
-        saved_deck = engine.get_preference('selected_deck', engine.config['anki']['default_deck'])
-        self.deck_var = tk.StringVar(value=saved_deck)
-        self.deck_display = ctk.CTkEntry(deck_inner, textvariable=self.deck_var, font=self.fonts["body"], state="readonly")
-        self.deck_display.grid(row=0, column=0, sticky="ew", padx=(0, 5))
-        
-        self.deck_btn = ctk.CTkButton(deck_inner, text="Change", width=60, command=self.change_deck, font=self.fonts["btn"], fg_color="transparent", border_width=1, text_color=("gray10", "gray90"))
-        self.deck_btn.grid(row=0, column=1)
-        
-        ctk.CTkLabel(self.input_card, text="🎯 Word:", font=self.fonts["label"], text_color=("gray30", "gray70")).grid(row=1, column=0, padx=15, pady=10, sticky="w")
-        word_inner = ctk.CTkFrame(self.input_card, fg_color="transparent")
-        word_inner.grid(row=1, column=1, padx=(0, 15), pady=10, sticky="ew")
-        word_inner.grid_columnconfigure(0, weight=1)
-        
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(2, weight=1)
+        self._log_visible = False
+
+        self.topbar = ctk.CTkFrame(self, fg_color="transparent")
+        self.topbar.grid(row=0, column=0, sticky="ew", padx=28, pady=(22, 16))
+        self.topbar.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(self.topbar, text="a", width=36, height=36, corner_radius=10,
+                     fg_color=('#276B5B', '#438D78'), text_color='white',
+                     font=self.fonts['title']).grid(row=0, column=0, padx=(0, 12))
+        ctk.CTkLabel(self.topbar, text="AnkiAutomata", font=self.fonts['title'],
+                     anchor='w').grid(row=0, column=1, sticky='w')
+        self.deck_var = tk.StringVar(value=engine.get_preference(
+            'selected_deck', engine.config['anki']['default_deck']))
+        self.deck_display = ctk.CTkEntry(self.topbar, textvariable=self.deck_var,
+                                       width=220, state='readonly', font=self.fonts['small'])
+        self.deck_display.grid(row=0, column=2, padx=(12, 6))
+        self.deck_btn = self.quiet_button(self.topbar, 'Change deck', self.change_deck, width=105)
+        self.deck_btn.grid(row=0, column=3, padx=(0, 8))
+        self.settings_btn = self.quiet_button(self.topbar, 'Settings', self.open_settings, width=80)
+        self.settings_btn.grid(row=0, column=4)
+
+        self.search_bar = ctk.CTkFrame(self, fg_color='transparent')
+        self.search_bar.grid(row=1, column=0, sticky='ew', padx=28, pady=(0, 18))
+        self.search_bar.grid_columnconfigure(0, weight=1)
         self.word_var = tk.StringVar()
-        self.word_entry = ctk.CTkEntry(word_inner, textvariable=self.word_var, font=self.fonts["body"], placeholder_text="Type to search...")
-        self.word_entry.grid(row=0, column=0, sticky="ew", padx=(0, 5))
-        ctk.CTkButton(word_inner, text="🔍", width=40, font=self.fonts["btn"], command=self.search_word).grid(row=0, column=1)
-        
-        ctk.CTkLabel(self.input_card, text="📖 Sentence:", font=self.fonts["label"], text_color=("gray30", "gray70")).grid(row=2, column=0, padx=15, pady=(10, 20), sticky="nw")
-        self.sentence_text = ctk.CTkTextbox(self.input_card, height=80, corner_radius=8, font=self.fonts["body"])
-        self.sentence_text.grid(row=2, column=1, padx=(0, 15), pady=(10, 20), sticky="ew")
-        
-        self.log_area = ctk.CTkTextbox(self.left_frame, height=90, font=self.fonts["log"], fg_color=("gray95", "gray10"))
-        self.log_area.grid(row=3, column=0, sticky="sew", pady=(20, 0))
-        self.log_area.insert("0.0", "Ready. Select text and use your AnkiAutomata desktop shortcut.\n")
-        self.log_area.configure(state="disabled")
+        self.word_entry = ctk.CTkEntry(self.search_bar, textvariable=self.word_var,
+            placeholder_text='Look up a word or phrase', height=46, font=self.fonts['body'])
+        self.word_entry.grid(row=0, column=0, sticky='ew', padx=(0, 10))
+        self.search_btn = ctk.CTkButton(self.search_bar, text='Search', width=110,
+                                       height=46, font=self.fonts['btn'], command=self.search_word)
+        self.search_btn.grid(row=0, column=1)
 
-        # --- VERTICAL SPLITTER (Width Adjustment) ---
-        self.v_splitter = ctk.CTkFrame(
-            self,
-            width=8,
-            corner_radius=4,
-            fg_color=("gray80", "gray28"),
-            cursor="sb_h_double_arrow"
-        )
-        self.v_splitter.grid(row=0, column=1, sticky="ns", padx=6, pady=20)
-        
-        self.v_grip_indicator = ctk.CTkFrame(
-            self.v_splitter,
-            width=3,
-            height=36,
-            corner_radius=2,
-            fg_color=("gray55", "gray50"),
-            cursor="sb_h_double_arrow"
-        )
-        self.v_grip_indicator.place(relx=0.5, rely=0.5, anchor="center")
-        
-        for w in (self.v_splitter, self.v_grip_indicator):
-            w.bind("<Enter>", lambda e: self._on_w_splitter_hover(True))
-            w.bind("<Leave>", lambda e: self._on_w_splitter_hover(False))
-            w.bind("<Button-1>", self._on_w_splitter_press)
-            w.bind("<B1-Motion>", self._on_w_splitter_drag)
-            w.bind("<ButtonRelease-1>", self._on_w_splitter_release)
-
-        # --- RIGHT COLUMN (Split-Pane Editor & Audio) ---
-        self.right_frame = ctk.CTkFrame(self, corner_radius=15)
-        self.right_frame.grid(row=0, column=2, sticky="nsew", padx=(0, 20), pady=20)
+        self.right_frame = ctk.CTkFrame(self, fg_color=SURFACE, corner_radius=16,
+                                        border_width=1, border_color=BORDER)
+        self.right_frame.grid(row=2, column=0, sticky='nsew', padx=28)
         self.right_frame.grid_columnconfigure(0, weight=1)
-        
-        self.right_frame.grid_rowconfigure(3, weight=0)
-        self.right_frame.grid_rowconfigure(6, weight=1)
-        
-        self.word_header = ctk.CTkLabel(self.right_frame, text="Dictionary Editor", font=self.fonts["section"])
-        self.word_header.grid(row=0, column=0, padx=20, pady=(15, 5), sticky="w")
-        
-        self.sense_frame = ctk.CTkFrame(self.right_frame, fg_color="transparent")
-        self.sense_frame.grid(row=1, column=0, sticky="ew", padx=20, pady=(0, 5))
-        
-        ctk.CTkLabel(self.sense_frame, text="Meaning:", font=self.fonts["label"], text_color=("gray30", "gray70")).pack(side="left", padx=(0, 8))
-        
-        self.sense_var = tk.StringVar(value="Select meaning...")
-        self.sense_menu = ctk.CTkOptionMenu(self.sense_frame, variable=self.sense_var, values=["Select meaning..."], 
-                                            command=self.on_sense_changed, font=self.fonts["small"], state="disabled")
-        self.sense_menu.pack(side="left", fill="x", expand=True, padx=(0, 12))
+        self.right_frame.grid_rowconfigure(7, weight=1)
+        self.word_header = ctk.CTkLabel(self.right_frame, text='A word worth remembering.',
+                                        font=self.fonts['word'], anchor='w')
+        self.word_header.grid(row=0, column=0, sticky='ew', padx=24, pady=(18, 0))
+        self.word_meta = ctk.CTkLabel(self.right_frame, text='CAMBRIDGE DICTIONARY',
+                                     text_color=MUTED, font=self.fonts['small'], anchor='w')
+        self.word_meta.grid(row=1, column=0, sticky='ew', padx=24, pady=(0, 8))
 
-        saved_auto_all = engine.get_preference('auto_all_meanings', False)
-        self.auto_all_meanings_var = tk.BooleanVar(value=saved_auto_all)
-        self.auto_all_switch = ctk.CTkSwitch(
-            self.sense_frame,
-            text="Auto-combine All",
-            variable=self.auto_all_meanings_var,
-            command=self.on_toggle_auto_all,
-            font=self.fonts["small"]
-        )
-        self.auto_all_switch.pack(side="right")
+        self.audio_frame = ctk.CTkFrame(self.right_frame, fg_color='transparent')
+        self.audio_frame.grid(row=2, column=0, sticky='ew', padx=24, pady=(0, 14))
+        self.uk_btn = self.quiet_button(self.audio_frame, 'Play UK', lambda: self.play_audio('uk'), width=78)
+        self.uk_btn.pack(side='left')
+        self.uk_ipa_label = ctk.CTkLabel(self.audio_frame, text='—', font=self.fonts['body'], text_color=MUTED)
+        self.uk_ipa_label.pack(side='left', padx=(8, 24))
+        self.us_btn = self.quiet_button(self.audio_frame, 'Play US', lambda: self.play_audio('us'), width=78)
+        self.us_btn.pack(side='left')
+        self.us_ipa_label = ctk.CTkLabel(self.audio_frame, text='—', font=self.fonts['body'], text_color=MUTED)
+        self.us_ipa_label.pack(side='left', padx=8)
+        self.reset_audio_ui()
 
-        self.def_label = ctk.CTkLabel(self.right_frame, text="Definition (Editable):", font=self.fonts["label"], text_color=("gray30", "gray70"))
-        self.def_label.grid(row=2, column=0, padx=20, pady=(5, 2), sticky="w")
-        
-        self.def_area = ctk.CTkTextbox(self.right_frame, font=self.fonts["editor"], fg_color=("gray95", "gray15"), 
-                                       wrap="word", height=self.user_pref_def_height)
-        self.def_area.grid(row=3, column=0, sticky="ew", padx=20, pady=(0, 4))
-        
-        # Horizontal Splitter (Height Adjustment)
-        self.splitter = ctk.CTkFrame(
-            self.right_frame,
-            height=9,
-            corner_radius=4,
-            fg_color=("gray80", "gray28"),
-            cursor="sb_v_double_arrow"
-        )
-        self.splitter.grid(row=4, column=0, sticky="ew", padx=20, pady=(2, 6))
-        
-        self.grip_indicator = ctk.CTkFrame(
-            self.splitter,
-            width=36,
-            height=3,
-            corner_radius=2,
-            fg_color=("gray55", "gray50"),
-            cursor="sb_v_double_arrow"
-        )
-        self.grip_indicator.place(relx=0.5, rely=0.5, anchor="center")
-        
-        for w in (self.splitter, self.grip_indicator):
-            w.bind("<Enter>", lambda e: self._on_splitter_hover(True))
-            w.bind("<Leave>", lambda e: self._on_splitter_hover(False))
-            w.bind("<Button-1>", self._on_splitter_press)
-            w.bind("<B1-Motion>", self._on_splitter_drag)
-            w.bind("<ButtonRelease-1>", self._on_splitter_release)
-        
-        # Examples Section
-        self.ex_header_frame = ctk.CTkFrame(self.right_frame, fg_color="transparent")
-        self.ex_header_frame.grid(row=5, column=0, padx=20, pady=(2, 5), sticky="ew")
-        
-        self.ex_label = ctk.CTkLabel(self.ex_header_frame, text="Examples (Editable):", font=self.fonts["label"], text_color=("gray30", "gray70"))
-        self.ex_label.pack(side="left")
-        
-        self.all_ex_btn = ctk.CTkButton(self.ex_header_frame, text="Show All Examples", width=125, height=24, 
-                                        font=self.fonts["small"], fg_color="transparent", border_width=1, 
-                                        command=self.load_all_examples, state="disabled")
-        self.all_ex_btn.pack(side="right")
-        
-        self.ex_area = ctk.CTkTextbox(self.right_frame, font=self.fonts["editor"], fg_color=("gray95", "gray15"), wrap="word")
-        self.ex_area.grid(row=6, column=0, sticky="nsew", padx=20, pady=(0, 15))
+        self.sense_frame = ctk.CTkFrame(self.right_frame, fg_color='transparent')
+        self.sense_frame.grid(row=3, column=0, sticky='ew', padx=24, pady=(0, 14))
+        ctk.CTkLabel(self.sense_frame, text='MEANING', text_color=MUTED,
+                     font=self.fonts['label']).pack(side='left', padx=(0, 14))
+        self.sense_var = tk.StringVar(value='Select meaning...')
+        self.sense_menu = ctk.CTkOptionMenu(self.sense_frame, variable=self.sense_var,
+            values=['Select meaning...'], command=self.on_sense_changed,
+            font=self.fonts['body'], dynamic_resizing=False, state='disabled', height=34)
+        self.sense_menu.pack(side='left', fill='x', expand=True)
+        self.auto_all_meanings_var = tk.BooleanVar(value=engine.get_preference('auto_all_meanings', False))
+
+        self.def_label = ctk.CTkLabel(self.right_frame, text='DEFINITION',
+                                     text_color=MUTED, font=self.fonts['label'], anchor='w')
+        self.def_label.grid(row=4, column=0, sticky='ew', padx=24, pady=(0, 6))
+        self.def_area = ctk.CTkTextbox(self.right_frame, font=self.fonts['editor'],
+            wrap='word', height=self.user_pref_def_height, fg_color=FIELD)
+        self.def_area.grid(row=5, column=0, sticky='ew', padx=24)
+        self.splitter = ctk.CTkFrame(self.right_frame, height=7, corner_radius=3,
+                                     fg_color=BORDER, cursor='sb_v_double_arrow')
+        self.splitter.grid(row=6, column=0, sticky='ew', padx=24, pady=8)
+        self.grip_indicator = ctk.CTkFrame(self.splitter, width=32, height=3,
+            fg_color=MUTED, corner_radius=2, cursor='sb_v_double_arrow')
+        self.grip_indicator.place(relx=0.5, rely=0.5, anchor='center')
+        for widget in (self.splitter, self.grip_indicator):
+            widget.bind('<Button-1>', self._on_splitter_press)
+            widget.bind('<B1-Motion>', self._on_splitter_drag)
+            widget.bind('<ButtonRelease-1>', self._on_splitter_release)
+
+        self.examples_frame = ctk.CTkFrame(self.right_frame, fg_color='transparent')
+        self.examples_frame.grid(row=7, column=0, sticky='nsew', padx=24)
+        self.examples_frame.grid_columnconfigure(0, weight=1)
+        self.examples_frame.grid_rowconfigure(1, weight=1)
+        ctk.CTkLabel(self.examples_frame, text='EXAMPLES', text_color=MUTED,
+                     font=self.fonts['label']).grid(row=0, column=0, sticky='w', pady=(0, 6))
+        self.all_ex_btn = self.quiet_button(self.examples_frame, 'Show all', self.load_all_examples, width=80)
+        self.all_ex_btn.grid(row=0, column=1, sticky='e', pady=(0, 6))
+        self.all_ex_btn.configure(state='disabled')
+        self.ex_area = ctk.CTkTextbox(self.examples_frame, height=130, fg_color=FIELD,
+                                     wrap='word', font=self.fonts['editor'])
+        self.ex_area.grid(row=1, column=0, columnspan=2, sticky='nsew')
         self.ex_area.bind('<Return>', self.auto_bullet)
-        
+
+        self.context_frame = ctk.CTkFrame(self.right_frame, fg_color='transparent')
+        self.context_frame.grid(row=8, column=0, sticky='ew', padx=24, pady=(14, 20))
+        ctk.CTkLabel(self.context_frame, text='YOUR SENTENCE', text_color=MUTED,
+                     font=self.fonts['label']).pack(anchor='w', pady=(0, 6))
+        self.sentence_text = ctk.CTkTextbox(self.context_frame, height=64, fg_color=FIELD,
+                                           wrap='word', font=self.fonts['body'])
+        self.sentence_text.pack(fill='x')
         self.reset_editor()
 
-        self.audio_frame = ctk.CTkFrame(self.right_frame, fg_color="transparent")
-        self.audio_frame.grid(row=7, column=0, sticky="ew", padx=20, pady=(0, 15))
-        self.audio_frame.grid_columnconfigure(0, weight=1)
-        self.audio_frame.grid_columnconfigure(1, weight=1)
-        
-        self.uk_frame = ctk.CTkFrame(self.audio_frame, fg_color=("gray90", "gray20"))
-        self.uk_frame.grid(row=0, column=0, sticky="ew", padx=(0, 5))
-        self.uk_btn = ctk.CTkButton(self.uk_frame, text="▶ UK Play", width=80, font=self.fonts["btn"], state="disabled", command=lambda: self.play_audio("uk"))
-        self.uk_btn.pack(side="left", padx=10, pady=10)
-        self.uk_ipa_label = ctk.CTkLabel(self.uk_frame, text="-", font=self.fonts["body"])
-        self.uk_ipa_label.pack(side="left", padx=5, pady=10)
-        
-        self.us_frame = ctk.CTkFrame(self.audio_frame, fg_color=("gray90", "gray20"))
-        self.us_frame.grid(row=0, column=1, sticky="ew", padx=(5, 0))
-        self.us_btn = ctk.CTkButton(self.us_frame, text="▶ US Play", width=80, font=self.fonts["btn"], state="disabled", command=lambda: self.play_audio("us"))
-        self.us_btn.pack(side="left", padx=10, pady=10)
-        self.us_ipa_label = ctk.CTkLabel(self.us_frame, text="-", font=self.fonts["body"])
-        self.us_ipa_label.pack(side="left", padx=5, pady=10)
+        self.submit_frame = ctk.CTkFrame(self, fg_color='transparent')
+        self.submit_frame.grid(row=3, column=0, sticky='ew', padx=28, pady=(16, 10))
+        self.submit_frame.grid_columnconfigure(0, weight=1)
+        self.audio_choice = tk.StringVar(value=engine.get_preference('audio_choice', 'uk'))
+        self.audio_save_frame = ctk.CTkFrame(self.submit_frame, fg_color='transparent')
+        self.audio_save_frame.grid(row=0, column=0, sticky='w')
+        ctk.CTkLabel(self.audio_save_frame, text='Save pronunciation', font=self.fonts['small'],
+                     text_color=MUTED).pack(side='left', padx=(0, 16))
+        for region in ('uk', 'us'):
+            ctk.CTkRadioButton(self.audio_save_frame, text=region.upper(), variable=self.audio_choice,
+                value=region, font=self.fonts['body'], width=62, radiobutton_width=18,
+                radiobutton_height=18, command=self.on_audio_choice_changed).pack(side='left', padx=(0, 8))
+        self.add_btn = ctk.CTkButton(self.submit_frame, text='Add to Anki', width=180,
+            height=44, font=self.fonts['btn_large'], state='disabled', command=self.confirm_and_add)
+        self.add_btn.grid(row=0, column=1, sticky='e')
 
-        self.submit_frame = ctk.CTkFrame(self.right_frame, fg_color="transparent")
-        self.submit_frame.grid(row=8, column=0, sticky="ew", padx=20, pady=(0, 20))
-        
-        saved_audio = engine.get_preference('audio_choice', 'uk')
-        self.audio_choice = tk.StringVar(value=saved_audio)
-        ctk.CTkRadioButton(self.submit_frame, text="Save UK to Anki", variable=self.audio_choice, 
-                           value="uk", font=self.fonts["body"], command=self.on_audio_choice_changed).pack(side="left", padx=(0, 15))
-        ctk.CTkRadioButton(self.submit_frame, text="Save US to Anki", variable=self.audio_choice, 
-                           value="us", font=self.fonts["body"], command=self.on_audio_choice_changed).pack(side="left")
-        
-        self.add_btn = ctk.CTkButton(self.submit_frame, text="➕ Confirm & Add to Anki", command=self.confirm_and_add, 
-                                     height=45, font=self.fonts["btn_large"], state="disabled")
-        self.add_btn.pack(side="right", fill="x", expand=True, padx=(20, 0))
-        
+        self.status_frame = ctk.CTkFrame(self, fg_color='transparent')
+        self.status_frame.grid(row=4, column=0, sticky='ew', padx=28, pady=(0, 12))
+        self.status_frame.grid_columnconfigure(0, weight=1)
+        self.status_label = ctk.CTkLabel(self.status_frame, text='Ready · Select text in your PDF to begin',
+            font=self.fonts['small'], text_color=MUTED, anchor='w')
+        self.status_label.grid(row=0, column=0, sticky='ew')
+        self.activity_btn = self.quiet_button(self.status_frame, 'Activity', self.toggle_activity, width=70)
+        self.activity_btn.grid(row=0, column=1)
+        self.log_area = ctk.CTkTextbox(self, height=100, font=self.fonts['log'], state='disabled')
+
         self.word_entry.bind('<Return>', lambda event: self.search_word())
         self.word_entry.focus()
         self.server_thread = threading.Thread(target=self.start_local_server, daemon=True)
@@ -339,45 +266,44 @@ class AnkiAutomataApp(ctk.CTk):
             self.lookup_requests.put_nowait(initial_word)
         self.after(200, self.check_triggers)
 
-    # --- Column Width Splitter Logic ---
-    def _on_w_splitter_hover(self, entering):
-        if not self._is_dragging_w_splitter:
-            color = ("#3b8ed0", "#1f538d") if entering else ("gray80", "gray28")
-            grip_color = ("#ffffff", "#dce4ee") if entering else ("gray55", "gray50")
-            self.v_splitter.configure(fg_color=color)
-            self.v_grip_indicator.configure(fg_color=grip_color)
+    def quiet_button(self, parent, text, command, **kwargs):
+        return ctk.CTkButton(parent, text=text, command=command, font=self.fonts['small'],
+            height=32, fg_color='transparent', hover_color=BORDER, text_color=TEXT, **kwargs)
 
-    def _on_w_splitter_press(self, event):
-        self._is_dragging_w_splitter = True
-        self._w_drag_start_x = event.x_root
-        curr_w = self.left_frame.winfo_width()
-        self._w_drag_start_val = curr_w if curr_w > 1 else self.user_pref_left_width
-        self.v_splitter.configure(fg_color=("#3b8ed0", "#1f538d"))
+    def toggle_activity(self):
+        self._log_visible = not self._log_visible
+        if self._log_visible:
+            self.log_area.grid(row=5, column=0, sticky='ew', padx=28, pady=(0, 16))
+        else:
+            self.log_area.grid_remove()
 
-    def _on_w_splitter_drag(self, event):
-        if not self._is_dragging_w_splitter: return
-        delta = event.x_root - self._w_drag_start_x
-        new_w = self._w_drag_start_val + delta
-        
-        min_w = 310
-        win_w = self.winfo_width()
-        max_w = max(min_w + 50, win_w - 450) if win_w > 800 else 600
-        
-        clamped_w = max(min_w, min(new_w, max_w))
-        self.user_pref_left_width = clamped_w
-        self.grid_columnconfigure(0, minsize=clamped_w)
-        self.update_idletasks()
+    def open_settings(self):
+        dialog = ctk.CTkToplevel(self)
+        dialog.title('Settings')
+        dialog.geometry('420x340')
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.bind('<Escape>', lambda event: dialog.destroy())
+        ctk.CTkLabel(dialog, text='Make it yours', font=self.fonts['title']).pack(anchor='w', padx=24, pady=(24, 18))
+        ctk.CTkLabel(dialog, text='Appearance', font=self.fonts['small'], text_color=MUTED).pack(anchor='w', padx=24)
+        appearance = ctk.CTkOptionMenu(dialog, values=['System', 'Light', 'Dark'], command=self.on_appearance_changed)
+        appearance.set(engine.get_preference('appearance', 'System'))
+        appearance.pack(fill='x', padx=24, pady=(6, 14))
+        ctk.CTkLabel(dialog, text='Text size', font=self.fonts['small'], text_color=MUTED).pack(anchor='w', padx=24)
+        scale = ctk.CTkOptionMenu(dialog, values=list(self.font_scale_factors), command=self.on_font_scale_changed)
+        scale.set(self.current_scale_choice)
+        scale.pack(fill='x', padx=24, pady=(6, 18))
+        ctk.CTkSwitch(dialog, text='Combine all meanings by default', variable=self.auto_all_meanings_var,
+                       command=self.on_toggle_auto_all, font=self.fonts['small']).pack(anchor='w', padx=24)
 
-    def _on_w_splitter_release(self, event):
-        self._is_dragging_w_splitter = False
-        self.v_splitter.configure(fg_color=("gray80", "gray28"))
-        self.v_grip_indicator.configure(fg_color=("gray55", "gray50"))
-        engine.save_preference('user_left_width', int(self.user_pref_left_width))
+    def on_appearance_changed(self, choice):
+        ctk.set_appearance_mode(choice)
+        engine.save_preference('appearance', choice)
 
     # --- Height Splitter Logic ---
     def _on_splitter_hover(self, entering):
         if not self._is_dragging_splitter:
-            color = ("#3b8ed0", "#1f538d") if entering else ("gray80", "gray28")
+            color = ('#276B5B', '#438D78') if entering else BORDER
             grip_color = ("#ffffff", "#dce4ee") if entering else ("gray55", "gray50")
             self.splitter.configure(fg_color=color)
             self.grip_indicator.configure(fg_color=grip_color)
@@ -387,7 +313,7 @@ class AnkiAutomataApp(ctk.CTk):
         self._drag_start_y = event.y_root
         h = self.def_area.winfo_height()
         self._drag_start_h = h if h > 1 else self.def_area.cget("height")
-        self.splitter.configure(fg_color=("#3b8ed0", "#1f538d"))
+        self.splitter.configure(fg_color=('#276B5B', '#438D78'))
 
     def _on_splitter_drag(self, event):
         if not self._is_dragging_splitter: return
@@ -404,7 +330,7 @@ class AnkiAutomataApp(ctk.CTk):
 
     def _on_splitter_release(self, event):
         self._is_dragging_splitter = False
-        self.splitter.configure(fg_color=("gray80", "gray28"))
+        self.splitter.configure(fg_color=BORDER)
         self.grip_indicator.configure(fg_color=("gray55", "gray50"))
         engine.save_preference('user_def_height', int(self.user_pref_def_height))
 
@@ -444,8 +370,7 @@ class AnkiAutomataApp(ctk.CTk):
                 engine.save_preferences({
                     'window_width': w, 
                     'window_height': h,
-                    'user_def_height': int(self.user_pref_def_height),
-                    'user_left_width': int(self.user_pref_left_width)
+                    'user_def_height': int(self.user_pref_def_height)
                 })
         except Exception as e:
             print(f"Error saving window preferences: {e}")
@@ -454,7 +379,8 @@ class AnkiAutomataApp(ctk.CTk):
 
     def _setup_fonts(self):
         self.base_font_sizes = {
-            "title": 23,
+            "title": 19,
+            "word": 32,
             "section": 20,
             "label": 13,
             "body": 13,
@@ -478,6 +404,7 @@ class AnkiAutomataApp(ctk.CTk):
 
         self.fonts = {
             "title": ctk.CTkFont(size=int(round(self.base_font_sizes["title"] * scale)), weight="bold"),
+            "word": ctk.CTkFont(size=int(round(self.base_font_sizes["word"] * scale)), weight="bold"),
             "section": ctk.CTkFont(size=int(round(self.base_font_sizes["section"] * scale)), weight="bold"),
             "label": ctk.CTkFont(size=int(round(self.base_font_sizes["label"] * scale)), weight="bold"),
             "body": ctk.CTkFont(size=int(round(self.base_font_sizes["body"] * scale))),
@@ -513,7 +440,7 @@ class AnkiAutomataApp(ctk.CTk):
         groups = self.current_scraped_data.get('groups', [])
         if len(groups) > 1:
             if val:
-                self.sense_var.set("📚 All Meanings & Examples")
+                self.sense_var.set("All meanings & examples")
                 self.apply_group("all")
             else:
                 first_label = self.format_group_label(0, groups[0])
@@ -577,14 +504,15 @@ class AnkiAutomataApp(ctk.CTk):
                 self.log(f"[!] Audio Playback Error: {e}")
 
     def log(self, message):
+        self.status_label.configure(text=message)
         self.log_area.configure(state="normal")
         self.log_area.insert("end", message + "\n")
         self.log_area.see("end")
         self.log_area.configure(state="disabled")
         self.update_idletasks()
 
-    def reset_editor(self, message="Search a word to see its definition here..."):
-        self.word_header.configure(text="Dictionary Editor")
+    def reset_editor(self, message="Search a word, or highlight text in your PDF and use your shortcut."):
+        self.word_header.configure(text="A word worth remembering.")
         self.def_area.delete("0.0", tk.END)
         self.def_area.insert("0.0", message)
         self.ex_area.delete("0.0", tk.END)
@@ -607,7 +535,7 @@ class AnkiAutomataApp(ctk.CTk):
         return f"{idx + 1}. {tag_str}{preview}{count_str}"
 
     def populate_editor(self, data, word):
-        self.word_header.configure(text=word.capitalize())
+        self.word_header.configure(text=word)
         groups = data.get('groups', [])
         
         if not groups:
@@ -627,13 +555,13 @@ class AnkiAutomataApp(ctk.CTk):
             menu_items.append(self.format_group_label(i, grp))
             
         if len(groups) > 1:
-            menu_items.append("📚 All Meanings & Examples")
+            menu_items.append("All meanings & examples")
 
         self.sense_menu.configure(values=menu_items, state="normal")
         self.all_ex_btn.configure(state="normal")
         
         if self.auto_all_meanings_var.get() and len(groups) > 1:
-            self.sense_var.set("📚 All Meanings & Examples")
+            self.sense_var.set("All meanings & examples")
             self.apply_group("all")
         else:
             self.sense_var.set(menu_items[0])
@@ -691,7 +619,7 @@ class AnkiAutomataApp(ctk.CTk):
         self.adjust_def_area_height()
 
     def on_sense_changed(self, choice):
-        if choice == "📚 All Meanings & Examples":
+        if choice == "All meanings & examples":
             self.apply_group("all")
         else:
             try:
