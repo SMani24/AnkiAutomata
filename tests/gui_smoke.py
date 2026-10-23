@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import engine
 import typewriter_client
 import audio_sources
+import network
 from test_audio_sources import recording, CAMBRIDGE
 from themes import palette
 from main import AnkiAutomataApp
@@ -40,6 +41,7 @@ class GuiSmokeTests(unittest.TestCase):
                         patch('main.StateStore', side_effect=lambda: StateStore(self.state_path)),
                         patch.object(engine, 'save_preference'), patch.object(engine, 'save_preferences'),
                         patch.object(engine, 'find_duplicate_notes', return_value=[]),
+                        patch.object(network, 'settings_path', return_value=Path(self.directory.name) / 'network.json'),
                         patch.object(AnkiAutomataApp, 'start_local_server')]
         for item in self.patches:
             item.start()
@@ -362,6 +364,77 @@ class GuiSmokeTests(unittest.TestCase):
             self.pump_until(lambda: getattr(self.app, '_voice_dialog', None) is not None and
                             self.app._voice_dialog.pending == 0)
         self.assertNotIn('selected_audio', self.app.current_scraped_data)
+
+    def test_proxy_settings_save_and_reopen_with_password_masked(self):
+        dialog = self.app.open_settings()
+        dialog.tabs.set('Network')
+        panel = dialog.network_settings
+        panel.enabled.set(True)
+        panel.protocol.set('HTTP')
+        panel.port.delete(0, 'end')
+        panel.port.insert(0, '10809')
+        panel.username.insert(0, 'user')
+        panel.password.insert(0, 'secret')
+        panel.save_button.invoke()
+        self.assertTrue(network.load_settings()['enabled'])
+        self.assertEqual(network.load_settings()['type'], 'http')
+        self.assertEqual(network.load_settings()['port'], 10809)
+        self.assertNotIn('secret', panel.status.cget('text'))
+        dialog.destroy()
+        dialog = self.app.open_settings()
+        panel = dialog.network_settings
+        self.assertEqual(panel.password.get(), 'secret')
+        self.assertEqual(panel.password.cget('show'), '•')
+        panel.enabled.set(False)
+        panel.save()
+        self.assertFalse(network.load_settings()['enabled'])
+
+    def test_proxy_validation_does_not_replace_saved_settings(self):
+        network.save_settings({**network.DEFAULTS, 'enabled': True, 'port': 10809})
+        panel = self.app.open_settings().network_settings
+        panel.port.delete(0, 'end')
+        panel.port.insert(0, 'invalid')
+        panel.save()
+        self.assertIn('whole number', panel.status.cget('text'))
+        self.assertEqual(network.load_settings()['port'], 10809)
+
+    def test_proxy_connection_test_is_async_and_does_not_save(self):
+        release = Event()
+        self.addCleanup(release.set)
+        panel = self.app.open_settings().network_settings
+        panel.enabled.set(True)
+        def test(settings):
+            release.wait(2)
+            return 'Connected through your proxy.'
+        with patch.object(network, 'test_connection', side_effect=test) as test_connection:
+            panel.test_button.invoke()
+            heartbeat = []
+            self.app.after(0, lambda: heartbeat.append(True))
+            self.pump_until(lambda: bool(heartbeat))
+            self.assertTrue(panel.testing)
+            self.assertFalse(network.settings_path().exists())
+            release.set()
+            self.pump_until(lambda: not panel.testing)
+        self.assertTrue(test_connection.call_args.args[0]['enabled'])
+        self.assertIn('Connected through your proxy', panel.status.cget('text'))
+
+    def test_late_proxy_test_does_not_touch_closed_settings(self):
+        release = Event()
+        self.addCleanup(release.set)
+        dialog = self.app.open_settings()
+        panel = dialog.network_settings
+        def test(settings):
+            release.wait(2)
+            return 'Connected.'
+        with patch.object(network, 'test_connection', side_effect=test):
+            panel.test()
+            dialog.destroy()
+            release.set()
+            deadline = time.monotonic() + .2
+            while time.monotonic() < deadline:
+                self.app.update()
+                time.sleep(.01)
+        self.assertEqual(self.callback_errors, [])
 
 
 if __name__ == '__main__':

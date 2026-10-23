@@ -1,5 +1,5 @@
 customtkinter
-requests
+requests[socks]
 beautifulsoup4
 pyperclip
 pygame

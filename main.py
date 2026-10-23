@@ -13,6 +13,7 @@ from PIL import Image
 import typewriter_client
 import audio_sources
 from voice_dialog import VoiceDialog
+from proxy_settings import ProxySettingsFrame
 from themes import PALETTES, palette, theme, recolor_widgets
 from ipc import LookupServer
 from background import BackgroundTasks
@@ -347,31 +348,48 @@ class AnkiAutomataApp(ctk.CTk):
             self.log_area.grid_remove()
 
     def open_settings(self):
+        previous = getattr(self, '_settings_dialog', None)
+        if previous is not None and previous.winfo_exists():
+            previous.lift()
+            return previous
         dialog = ctk.CTkToplevel(self)
+        self._settings_dialog = dialog
         dialog.title('Settings')
-        dialog.geometry('440x500')
+        dialog.geometry('520x660')
+        dialog.minsize(480, 560)
         dialog.transient(self)
         dialog.grab_set()
         dialog.bind('<Escape>', lambda event: dialog.destroy())
-        ctk.CTkLabel(dialog, text='Make it yours', font=self.fonts['title']).pack(anchor='w', padx=24, pady=(24, 18))
-        ctk.CTkLabel(dialog, text='Appearance', font=self.fonts['small'], text_color=MUTED).pack(anchor='w', padx=24)
-        appearance = ctk.CTkOptionMenu(dialog, values=['System', 'Light', 'Dark'], command=self.on_appearance_changed)
+        tabs = ctk.CTkTabview(dialog)
+        tabs.pack(fill='both', expand=True, padx=12, pady=12)
+        appearance_tab = tabs.add('Appearance')
+        network_tab = tabs.add('Network')
+        preferences = ctk.CTkScrollableFrame(appearance_tab, fg_color='transparent')
+        preferences.pack(fill='both', expand=True)
+        ctk.CTkLabel(preferences, text='Make it yours', font=self.fonts['title']).pack(anchor='w', padx=24, pady=(24, 18))
+        ctk.CTkLabel(preferences, text='Appearance', font=self.fonts['small'], text_color=MUTED).pack(anchor='w', padx=24)
+        appearance = ctk.CTkOptionMenu(preferences, values=['System', 'Light', 'Dark'], command=self.on_appearance_changed)
         appearance.set(engine.get_preference('appearance', 'System'))
         appearance.pack(fill='x', padx=24, pady=(6, 14))
-        ctk.CTkLabel(dialog, text='Color scheme', font=self.fonts['small'], text_color=MUTED).pack(anchor='w', padx=24)
-        scheme = ctk.CTkOptionMenu(dialog, values=list(PALETTES), command=self.on_color_scheme_changed)
+        ctk.CTkLabel(preferences, text='Color scheme', font=self.fonts['small'], text_color=MUTED).pack(anchor='w', padx=24)
+        scheme = ctk.CTkOptionMenu(preferences, values=list(PALETTES), command=self.on_color_scheme_changed)
         scheme.set(engine.get_preference('color_scheme', 'Sage'))
         scheme.pack(fill='x', padx=24, pady=(6, 14))
-        ctk.CTkLabel(dialog, text='Text size', font=self.fonts['small'], text_color=MUTED).pack(anchor='w', padx=24)
-        scale = ctk.CTkOptionMenu(dialog, values=list(self.font_scale_factors), command=self.on_font_scale_changed)
+        ctk.CTkLabel(preferences, text='Text size', font=self.fonts['small'], text_color=MUTED).pack(anchor='w', padx=24)
+        scale = ctk.CTkOptionMenu(preferences, values=list(self.font_scale_factors), command=self.on_font_scale_changed)
         scale.set(self.current_scale_choice)
         scale.pack(fill='x', padx=24, pady=(6, 18))
-        ctk.CTkSwitch(dialog, text='Combine all meanings by default', variable=self.auto_all_meanings_var,
+        ctk.CTkSwitch(preferences, text='Combine all meanings by default', variable=self.auto_all_meanings_var,
                        command=self.on_toggle_auto_all, font=self.fonts['small']).pack(anchor='w', padx=24)
-        ctk.CTkLabel(dialog, text='Pronunciation saved to Anki', font=self.fonts['small'], text_color=MUTED).pack(anchor='w', padx=24, pady=(18, 6))
-        audio = ctk.CTkOptionMenu(dialog, values=['UK', 'US'], command=lambda value: self.set_audio_preference(value.lower()))
+        ctk.CTkLabel(preferences, text='Pronunciation saved to Anki', font=self.fonts['small'], text_color=MUTED).pack(anchor='w', padx=24, pady=(18, 6))
+        audio = ctk.CTkOptionMenu(preferences, values=['UK', 'US'], command=lambda value: self.set_audio_preference(value.lower()))
         audio.set(self.audio_choice.get().upper())
         audio.pack(fill='x', padx=24)
+
+        dialog.network_settings = ProxySettingsFrame(network_tab, self)
+        dialog.network_settings.pack(fill='both', expand=True)
+        dialog.tabs = tabs
+        return dialog
 
     def on_appearance_changed(self, choice):
         ctk.set_appearance_mode(choice)

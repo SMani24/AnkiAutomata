@@ -26,7 +26,7 @@ def entry(word, pos='noun', audio='voice', region='uk'):
 class PronunciationMatchingTests(unittest.TestCase):
     def scrape(self, word, html):
         response = Mock(status_code=200, text=html, url='https://dictionary.cambridge.org/dictionary/english/' + word)
-        with patch.object(engine.requests, 'get', return_value=response):
+        with patch.object(engine.network, 'get', return_value=response):
             return engine.scrape_cambridge(word)
 
     def test_redirected_inflection_does_not_use_base_word_voice(self):

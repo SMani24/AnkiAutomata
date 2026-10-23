@@ -1,4 +1,4 @@
-import requests
+import network
 import json
 import re
 import os
@@ -54,7 +54,7 @@ def save_preferences(pref_dict):
 
 def invoke_anki(action, **params):
     payload = {'action': action, 'version': 6, 'params': params}
-    http_response = requests.post(config['anki']['url'], json=payload, timeout=REQUEST_TIMEOUT)
+    http_response = network.post(config['anki']['url'], json=payload, timeout=REQUEST_TIMEOUT, direct=True)
     http_response.raise_for_status()
     response = http_response.json()
     if not isinstance(response, dict) or 'error' not in response or 'result' not in response:
@@ -189,7 +189,7 @@ def _highlight_text(word, text, open_tag, close_tag):
     return ''.join(parts)
 
 def download_audio(url, headers):
-    response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+    response = network.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
     response.raise_for_status()
     return response.content
 
@@ -271,7 +271,7 @@ def scrape_cambridge(word, manual_url=None):
         formatted_query = quote(word.strip().lower().replace(' ', '-'), safe='-')
         url = f"{config['scraper']['base_url']}{formatted_query}"
     
-    response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+    response = network.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
     if response.status_code == 404:
         return None
     response.raise_for_status()

@@ -111,7 +111,7 @@ class SourceTests(unittest.TestCase):
             self.assertEqual(self.sources.fetch('Necessary', 'free_dictionary'), [])
         commons.assert_called_once_with(pageids=['2'])
 
-    @patch.object(audio.requests, 'get')
+    @patch.object(audio.network, 'get')
     def test_redirects_cannot_escape_provider_hosts(self, get):
         redirect = response(status=302, headers={'Location': 'https://127.0.0.1/private'})
         get.return_value = redirect
@@ -121,7 +121,7 @@ class SourceTests(unittest.TestCase):
         redirect.close.assert_called_once()
         self.assertFalse(get.call_args.kwargs['allow_redirects'])
 
-    @patch.object(audio.requests, 'get')
+    @patch.object(audio.network, 'get')
     def test_audio_download_is_bounded_and_checks_the_file_format(self, get):
         for content in (b'<html>unavailable</html>', b'ID3wrong extension', b'x' * (5*1024*1024 + 1)):
             get.return_value = response(content)
@@ -131,7 +131,7 @@ class SourceTests(unittest.TestCase):
         get.return_value = response()
         self.assertEqual(self.sources.recording(recording()), b'OggSrecording')
 
-    @patch.object(audio.requests, 'get')
+    @patch.object(audio.network, 'get')
     def test_missing_provider_entry_returns_no_options(self, get):
         get.return_value = response(status=404)
         self.assertEqual(self.sources.fetch('nonexistent', 'oxford'), [])

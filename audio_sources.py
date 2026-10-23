@@ -12,6 +12,7 @@ from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse, urlunparse
 
 import requests
 from bs4 import BeautifulSoup
+import network
 
 ALTERNATIVE_PROVIDERS = ('oxford', 'wiktionary', 'free_dictionary')
 PROVIDERS = ('cambridge', *ALTERNATIVE_PROVIDERS)
@@ -130,7 +131,7 @@ class AudioSources:
                     raise ValueError('Unsupported pronunciation lookup source.')
             agent = ('Mozilla/5.0 (compatible; AnkiAutomata personal dictionary lookup)'
                      if urlparse(url).hostname == LOOKUP_HOSTS[0] else AGENT)
-            response = requests.get(url, params=params, stream=True, allow_redirects=False,
+            response = network.get(url, params=params, stream=True, allow_redirects=False,
                                     timeout=(5, 12), headers={'User-Agent': agent})
             try:
                 if response.status_code in (301, 302, 303, 307, 308):

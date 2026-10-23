@@ -62,14 +62,14 @@ class FormattingTests(unittest.TestCase):
 
 
 class NetworkTests(unittest.TestCase):
-    @patch.object(engine.requests, 'post')
+    @patch.object(engine.network, 'post')
     def test_anki_request_checks_status_and_has_timeout(self, post):
         post.return_value.json.return_value = {'result': ['Default'], 'error': None}
         self.assertEqual(engine.invoke_anki('deckNames'), ['Default'])
         self.assertEqual(post.call_args.kwargs['timeout'], engine.REQUEST_TIMEOUT)
         post.return_value.raise_for_status.assert_called_once()
 
-    @patch.object(engine.requests, 'post')
+    @patch.object(engine.network, 'post')
     def test_anki_error_and_malformed_response(self, post):
         post.return_value.json.return_value = {'result': None, 'error': 'unknown model'}
         with self.assertRaisesRegex(Exception, 'unknown model'):
@@ -79,14 +79,14 @@ class NetworkTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'Invalid response'):
                 engine.invoke_anki('deckNames')
 
-    @patch.object(engine.requests, 'get')
+    @patch.object(engine.network, 'get')
     def test_audio_http_error_is_not_saved_as_audio(self, get):
         get.return_value.raise_for_status.side_effect = requests.HTTPError('503')
         with self.assertRaises(requests.HTTPError):
             engine.download_audio('https://example.org/audio.mp3', {})
         self.assertEqual(get.call_args.kwargs['timeout'], engine.REQUEST_TIMEOUT)
 
-    @patch.object(engine.requests, 'get')
+    @patch.object(engine.network, 'get')
     def test_audio_download_returns_bytes(self, get):
         get.return_value.content = b'mp3 data'
         self.assertEqual(engine.download_audio('https://example.org/audio.mp3', {}), b'mp3 data')
@@ -108,7 +108,7 @@ class ScraperTests(unittest.TestCase):
           </div>
         </div>'''
 
-    @patch.object(engine.requests, 'get')
+    @patch.object(engine.network, 'get')
     def test_groups_definitions_and_resolves_audio_urls(self, get):
         get.return_value = Mock(status_code=200, text=self.HTML)
         data = engine.scrape_cambridge('cat')
@@ -120,13 +120,13 @@ class ScraperTests(unittest.TestCase):
         self.assertEqual(data['us_audio'], 'https://dictionary.cambridge.org/media/us-cat.mp3')
         self.assertEqual(get.call_args.kwargs['timeout'], engine.REQUEST_TIMEOUT)
 
-    @patch.object(engine.requests, 'get')
+    @patch.object(engine.network, 'get')
     def test_word_is_encoded_as_single_url_path_component(self, get):
         get.return_value = Mock(status_code=404)
         self.assertIsNone(engine.scrape_cambridge(' A/B? # '))
         self.assertTrue(get.call_args.args[0].endswith('a%2Fb%3F-%23'))
 
-    @patch.object(engine.requests, 'get')
+    @patch.object(engine.network, 'get')
     def test_http_failure_is_distinct_from_missing_word(self, get):
         get.return_value.raise_for_status.side_effect = requests.HTTPError('503')
         with self.assertRaises(requests.HTTPError):

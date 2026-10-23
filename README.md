@@ -18,6 +18,7 @@ A focused desktop workspace for turning words from your reading into Anki cards.
 - **Selected-text shortcut:** searches highlighted words or phrases without changing your clipboard; opens the app if it is closed.
 - **Focused editor:** warm light and charcoal dark themes, a teal accent, adjustable text sizes, and a collapsible activity log. Settings offers Sage, Ocean, Plum, and Amber color schemes, each with light and dark appearances.
 - **Responsive lookups:** dictionary requests, duplicate checks, audio downloads, deck loading, and exports run in the background. Results from older searches cannot overwrite your latest lookup.
+- **Internet proxy:** Settings → Network supports HTTP and SOCKS5 proxies, optional authentication, and a background connection test. Dictionary lookups and all pronunciation sources share the selected route; local Anki and Typewriter connections stay direct.
 - **Compact mode:** a smaller window for reading beside a PDF. Switch back to the full editor to work with sentence context and additional controls; your edits stay intact.
 - **Useful duplicate handling:** compares the exact rendered Front field for the configured note type in the selected deck and its subdecks. Existing cards get a preview and an **Open in Anki** action. Matches inside examples or longer words do not block a lookup, and duplicates are checked again before exporting.
 - **Typewriter integration:** send the reviewed word, definition, and sentence to the running Typewriter app without clearing your Anki draft or overwriting an existing Typewriter word.
@@ -60,6 +61,10 @@ To use **Send to Typewriter**, start Typewriter at `http://127.0.0.1:8080` and r
 Audio playback initializes the audio device only when requested. You can browse and edit dictionary results while Anki is offline; Anki must be available when adding cards.
 
 Alternative recordings require an exact matching headword and a successful preview before selection. Wikimedia recordings also require author and license information. Rejecting the current recording keeps your definitions and edits, and saves cards without audio until you choose another voice. **Reconsider rejected** makes rejected options available for review again. Source availability varies by word and network access.
+
+To use a proxy, open **Settings → Network**, enable **Route internet requests through a proxy**, and enter its protocol, host, and port. Enter the hostname or IP address without a URL prefix; username and password are optional. **SOCKS5 (proxy DNS)** also routes hostname resolution through the proxy. **Test connection** checks the values currently shown without saving them. Choose **Save network settings** to apply them to new requests immediately; requests already running keep their previous route. Turning the proxy off uses a direct connection, ignoring environment proxy variables. A failed proxy connection never retries directly.
+
+Proxy settings are stored locally at `~/.config/AnkiAutomata/network.json`, or under `$XDG_CONFIG_HOME/AnkiAutomata` when set. Credentials are stored as plain text in an owner-only file, separate from the repository and `config.json`. Clearing the password field and saving removes the saved password. Existing installations should run `pip install -r requirements.txt` to add SOCKS support.
 
 ## Card configuration
 
@@ -113,7 +118,7 @@ On another Linux desktop, add a custom shortcut in Keyboard Settings using the a
 
 Type a word or phrase and press Enter or Search. Select a meaning, edit the definition and examples, and optionally add your own sentence. **Use URL** accepts a direct Cambridge Dictionary link when a normal lookup does not find the intended entry. Drag the divider between definitions and examples to adjust the definition height.
 
-**Settings** controls appearance, color scheme, text size, default meaning combination, and pronunciation region. **Recent lookups** restores a previous word with your edits. **Activity** opens the detailed log.
+**Settings** has Appearance and Network tabs for appearance, color scheme, text size, default meaning combination, pronunciation region, and proxy configuration. **Recent lookups** restores a previous word with your edits. **Activity** opens the detailed log.
 
 | Shortcut | Action |
 | --- | --- |
@@ -170,4 +175,4 @@ An optional check against Typewriter's actual source uses its own Python environ
 ../Typewriter/.venv/bin/python tests/typewriter_integration.py --typewriter-root ../Typewriter
 ```
 
-The main components are `main.py` (UI), `engine.py` (scraping and Anki), `audio_sources.py`/`voice_dialog.py` (alternative recordings and preview/selection), `background.py` (worker tasks), `storage.py` (drafts/history and voice decisions), `ipc.py` (local request server), `shortcut.py` (desktop integration), `theme.json`/`themes.py` (widget themes), `desktop.py`/`assets/` (desktop integration and icons), and `typewriter_client.py` (local Typewriter adapter).
+The main components are `main.py` (UI), `engine.py` (scraping and Anki), `network.py`/`proxy_settings.py` (shared internet routing and proxy controls), `audio_sources.py`/`voice_dialog.py` (alternative recordings and preview/selection), `background.py` (worker tasks), `storage.py` (drafts/history and voice decisions), `ipc.py` (local request server), `shortcut.py` (desktop integration), `theme.json`/`themes.py` (widget themes), `desktop.py`/`assets/` (desktop integration and icons), and `typewriter_client.py` (local Typewriter adapter).
