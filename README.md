@@ -24,6 +24,7 @@ A focused desktop workspace for turning words from your reading into Anki cards.
 - **Recent lookups and recovery:** the twenty most recent words retain their edited definitions, examples, sentence, meaning selection, deck, and audio choice. Drafts autosave after a short typing pause and recover when you reopen the app.
 - **Cambridge meanings:** extracts definitions and examples, groups related senses by part of speech and guideword, and lets you select one group or combine them all.
 - **Pronunciation:** speaker/flag buttons play UK and US audio. Recordings and IPA must come from an entry matching the exact headword; choosing a meaning also selects its entry’s pronunciation. Redirected base words and unrelated entries cannot supply audio. A missing regional recording falls back to an available one. Re-search older drafts to refresh pronunciation links.
+- **Alternative voices:** when Cambridge has no recording or a recording fails to download, the voice chooser searches Oxford, Wiktionary, and the Free Dictionary API. Open **Other voices…** at any time, use **Current voice is wrong** to reject a recording, preview the alternatives, then choose **Use this voice**. Choices and rejections survive restarts and new searches for the same word. Selected audio exports in its original MP3, Ogg, or WAV format with source and license credits; Cambridge IPA is not attached to a different source’s recording. Unavailable sources do not block results from the others.
 - **Editable card content:** preserves line breaks, indentation, and highlighted target words while escaping plain text correctly for Anki HTML.
 
 ## Installation
@@ -58,6 +59,8 @@ To use **Send to Typewriter**, start Typewriter at `http://127.0.0.1:8080` and r
 
 Audio playback initializes the audio device only when requested. You can browse and edit dictionary results while Anki is offline; Anki must be available when adding cards.
 
+Alternative recordings require an exact matching headword and a successful preview before selection. Wikimedia recordings also require author and license information. Rejecting the current recording keeps your definitions and edits, and saves cards without audio until you choose another voice. **Reconsider rejected** makes rejected options available for review again. Source availability varies by word and network access.
+
 ## Card configuration
 
 `config.json` is loaded beside `engine.py`, regardless of the directory from which you launch the app. Configure your AnkiConnect URL, default deck, note type, tags, scraper settings, and HTML templates there.
@@ -68,7 +71,7 @@ The configured note type must provide these fields, with these exact names:
 | --- | --- |
 | `Front` | Target word |
 | `Example sentence` | Your sentence with the word highlighted |
-| `Pronounciation` | IPA and audio; the spelling is retained for existing note types |
+| `Pronounciation` | IPA and audio, or chosen alternative audio with credits; the spelling is retained for existing note types |
 | `Back` | Definitions and examples |
 
 The field mapping is in `engine.build_note`. For example, the Anki section can be:
@@ -167,4 +170,4 @@ An optional check against Typewriter's actual source uses its own Python environ
 ../Typewriter/.venv/bin/python tests/typewriter_integration.py --typewriter-root ../Typewriter
 ```
 
-The main components are `main.py` (UI), `engine.py` (scraping and Anki), `background.py` (worker tasks), `storage.py` (drafts/history), `ipc.py` (local request server), `shortcut.py` (desktop integration), `theme.json`/`themes.py` (widget themes), `desktop.py`/`assets/` (desktop integration and icons), and `typewriter_client.py` (local Typewriter adapter).
+The main components are `main.py` (UI), `engine.py` (scraping and Anki), `audio_sources.py`/`voice_dialog.py` (alternative recordings and preview/selection), `background.py` (worker tasks), `storage.py` (drafts/history and voice decisions), `ipc.py` (local request server), `shortcut.py` (desktop integration), `theme.json`/`themes.py` (widget themes), `desktop.py`/`assets/` (desktop integration and icons), and `typewriter_client.py` (local Typewriter adapter).

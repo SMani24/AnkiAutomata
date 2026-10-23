@@ -9,6 +9,7 @@ from html import escape
 from pathlib import Path
 from urllib.parse import quote, urljoin, urlparse
 from bs4 import BeautifulSoup
+import audio_sources
 
 CONFIG_FILE = Path(__file__).resolve().with_name('config.json')
 REQUEST_TIMEOUT = (5, 15)
@@ -114,13 +115,19 @@ def build_note(snapshot, audio_filename=''):
     examples = bold_word(word, snapshot['examples']).replace('\r\n', '\n').replace(
         '\n', config['templates']['example_separator'])
     audio = f'[sound:{audio_filename}]' if audio_filename else ''
+    selected = audio_sources.selected_record(data, word)
+    pronunciation = f'{data.get(f"{region}_ipa") or ""} {audio}'.strip()
+    if data.get('audio_review_required') and not selected:
+        pronunciation = ''
+    if selected:
+        pronunciation = (audio + '<br>' + audio_sources.attribution(selected)) if audio else ''
     return {
         'deckName': snapshot['deck'],
         'modelName': config['anki']['model_name'],
         'fields': {
             'Front': config['templates']['front'].format(word=escape(word)),
             'Example sentence': format_sentence(word, snapshot.get('sentence', '')),
-            'Pronounciation': f'{data.get(f"{region}_ipa") or ""} {audio}'.strip(),
+            'Pronounciation': pronunciation,
             'Back': config['templates']['back_layout'].format(definition='<br>'.join(lines), examples=examples)
         },
         'options': {'allowDuplicate': False, 'duplicateScope': 'deck',
@@ -136,14 +143,20 @@ def export_note(snapshot):
         return {'duplicates': duplicates}
     data = snapshot.get('data') or {}
     region = snapshot.get('audio', 'uk')
-    url = data.get(f'{region}_audio')
+    selected = audio_sources.selected_record(data, snapshot['word'])
+    url = selected['url'] if selected else audio_sources.regional_url(data, region)
+    if data.get('audio_review_required') and not selected:
+        url = None
     filename = ''
     warnings = []
     if url:
         try:
-            content = download_audio(url, data.get('headers', {}))
+            content = (audio_sources.AudioSources().recording(selected) if selected else
+                       download_audio(url, data.get('headers', {})))
             safe_word = re.sub(r'[^\w.-]+', '_', snapshot['word'])[:80]
-            filename = invoke_anki('storeMediaFile', filename=f'ankiautomata_{region}_{safe_word}.mp3',
+            suffix = Path(urlparse(url).path).suffix.lower() if selected else '.mp3'
+            identity = selected['id'] if selected else region
+            filename = invoke_anki('storeMediaFile', filename=f'ankiautomata_{identity}_{safe_word}{suffix}',
                                    data=base64.b64encode(content).decode('ascii'))
         except Exception as error:
             warnings.append(f'Audio could not be saved: {error}')

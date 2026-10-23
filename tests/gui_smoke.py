@@ -13,6 +13,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import engine
 import typewriter_client
+import audio_sources
+from test_audio_sources import recording, CAMBRIDGE
 from themes import palette
 from main import AnkiAutomataApp
 from storage import StateStore
@@ -246,6 +248,120 @@ class GuiSmokeTests(unittest.TestCase):
         self.assertEqual(send.call_args.args[0]['word'], 'serendipity')
         self.assertIsNotNone(self.app.current_scraped_data)
         self.assertIsNotNone(self.app.store.draft)
+
+    def open_voices(self):
+        self.show_word('necessary')
+        self.app.current_scraped_data.update(
+            source_url='https://dictionary.cambridge.org/dictionary/english/necessary', uk_audio=CAMBRIDGE)
+        record = recording()
+        with patch.object(audio_sources.AudioSources, 'fetch', return_value=[record]):
+            self.app.open_voice_dialog()
+            dialog = self.app._voice_dialog
+            self.pump_until(lambda: dialog.pending == 0)
+        return dialog, record
+
+    def test_other_voices_requires_preview_before_approval_and_restores_choice(self):
+        dialog, record = self.open_voices()
+        row = dialog.rows[record['id']]
+        self.assertEqual(row['choose'].cget('state'), 'disabled')
+        dialog.choose(record)
+        self.assertNotIn('selected_audio', self.app.current_scraped_data)
+        with patch.object(audio_sources.AudioSources, 'recording', return_value=b'OggSrecording'), \
+             patch('main.pygame.mixer'):
+            dialog.preview(record)
+            self.pump_until(lambda: row['previewed'])
+            row['choose'].invoke()
+        self.assertEqual(self.app.current_scraped_data['selected_audio']['id'], record['id'])
+        self.app.update()
+        self.assertTrue(self.app.selected_voice_btn.winfo_ismapped())
+        self.assertEqual(self.app.audio_save_label.cget('text'), 'Save chosen voice')
+        self.assertFalse(any(button.winfo_ismapped() for button in self.app.audio_region_buttons))
+        self.assertFalse(self.app.uk_btn.winfo_ismapped())
+        saved = self.app.store.draft
+        self.app.restore_snapshot(saved)
+        self.app.update()
+        self.assertEqual(self.app.current_scraped_data['selected_audio']['id'], record['id'])
+        self.app.toggle_compact()
+        self.app.toggle_compact()
+        self.app.update()
+        self.assertFalse(self.app.uk_ipa_label.winfo_ismapped())
+        self.assertTrue(self.app.selected_voice_btn.winfo_ismapped())
+
+    def test_rejecting_current_voice_blocks_export_and_survives_refresh(self):
+        dialog, record = self.open_voices()
+        original_definition = self.app.def_area.get('1.0', 'end-1c')
+        dialog.reject_current()
+        self.assertTrue(self.app.current_scraped_data['audio_review_required'])
+        self.assertIn(audio_sources.candidate_id(CAMBRIDGE), self.app.current_scraped_data['rejected_audio'])
+        self.assertEqual(engine.build_note(self.app.snapshot())['fields']['Pronounciation'], '')
+        self.assertEqual(self.app.def_area.get('1.0', 'end-1c'), original_definition)
+        fresh = dictionary_entry('necessary')
+        fresh['uk_audio'] = CAMBRIDGE
+        fresh['pronunciations']['0']['uk_audio'] = CAMBRIDGE
+        self.app.close_voice_dialog()
+        with patch.object(audio_sources.AudioSources, 'fetch', return_value=[]):
+            self.app.lookup_finished(self.app._search_id, 'necessary', None, (fresh, [], None))
+            self.pump_until(lambda: self.app._voice_dialog.pending == 0)
+        self.assertTrue(fresh['audio_review_required'])
+        self.assertEqual(engine.build_note(self.app.snapshot())['fields']['Pronounciation'], '')
+
+    def test_missing_audio_automatically_searches_other_sources(self):
+        data = dictionary_entry('necessary')
+        data['uk_audio'] = None
+        data['pronunciations']['0']['uk_audio'] = None
+        with patch.object(audio_sources.AudioSources, 'fetch', return_value=[recording()]) as fetch:
+            self.app.lookup_finished(self.app._search_id, 'necessary', None, (data, [], None))
+            self.pump_until(lambda: self.app._voice_dialog.pending == 0)
+        self.assertEqual(fetch.call_count, 3)
+        self.assertEqual(len(self.app._voice_dialog.rows), 1)
+        self.assertNotIn('selected_audio', data)
+
+    def test_failed_source_does_not_hide_other_results(self):
+        self.show_word('necessary')
+        def fetch(word, provider):
+            if provider == 'oxford':
+                raise ValueError('unavailable')
+            return [recording()]
+        with patch.object(audio_sources.AudioSources, 'fetch', side_effect=fetch):
+            self.app.open_voice_dialog()
+            self.pump_until(lambda: self.app._voice_dialog.pending == 0)
+        dialog = self.app._voice_dialog
+        self.assertIn(recording()['id'], dialog.rows)
+        self.assertIn('Unavailable: Oxford', dialog.status.cget('text'))
+
+    def test_late_preview_cannot_play_or_approve_after_dialog_closes(self):
+        dialog, record = self.open_voices()
+        release = Event()
+        def download(record):
+            release.wait(2)
+            return b'OggSrecording'
+        with patch.object(audio_sources.AudioSources, 'recording', side_effect=download), \
+             patch('main.pygame.mixer') as mixer:
+            dialog.preview(record)
+            dialog.close()
+            release.set()
+            self.pump_until(lambda: self.app.tasks.jobs.empty())
+            for _ in range(10):
+                self.app.update()
+                time.sleep(0.01)
+            mixer.music.play.assert_not_called()
+        self.assertNotIn('selected_audio', self.app.current_scraped_data)
+
+    def test_preview_failure_does_not_enable_choosing(self):
+        dialog, record = self.open_voices()
+        with patch.object(audio_sources.AudioSources, 'recording', side_effect=ValueError('not audio')):
+            dialog.preview(record)
+            self.pump_until(lambda: 'Preview failed:' in dialog.status.cget('text'))
+        self.assertEqual(dialog.rows[record['id']]['choose'].cget('state'), 'disabled')
+
+    def test_unavailable_recording_opens_alternative_sources(self):
+        self.show_word('necessary')
+        with patch.object(engine, 'download_audio', side_effect=ValueError('missing recording')), \
+             patch.object(audio_sources.AudioSources, 'fetch', return_value=[]):
+            self.app.play_audio('uk')
+            self.pump_until(lambda: getattr(self.app, '_voice_dialog', None) is not None and
+                            self.app._voice_dialog.pending == 0)
+        self.assertNotIn('selected_audio', self.app.current_scraped_data)
 
 
 if __name__ == '__main__':

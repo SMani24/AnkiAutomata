@@ -11,6 +11,8 @@ import threading
 import engine
 from PIL import Image
 import typewriter_client
+import audio_sources
+from voice_dialog import VoiceDialog
 from themes import PALETTES, palette, theme, recolor_widgets
 from ipc import LookupServer
 from background import BackgroundTasks
@@ -206,6 +208,10 @@ class AnkiAutomataApp(ctk.CTk):
         self.us_btn.pack(side='left')
         self.us_ipa_label = ctk.CTkLabel(self.audio_frame, text='—', font=self.fonts['body'], text_color=MUTED)
         self.us_ipa_label.pack(side='left', padx=8)
+        self.selected_voice_btn = self.quiet_button(self.audio_frame, '▶ Chosen voice',
+                                                     lambda: self.play_audio('selected'), width=150)
+        self.other_voices_btn = self.quiet_button(self.audio_frame, 'Other voices…', self.open_voice_dialog, width=115)
+        self.other_voices_btn.pack(side='right', padx=(8, 0))
         self.reset_audio_ui()
 
         self.sense_frame = ctk.CTkFrame(self.right_frame, fg_color='transparent')
@@ -273,12 +279,16 @@ class AnkiAutomataApp(ctk.CTk):
         self.audio_choice = tk.StringVar(value=engine.get_preference('audio_choice', 'uk'))
         self.audio_save_frame = ctk.CTkFrame(self.submit_frame, fg_color='transparent')
         self.audio_save_frame.grid(row=0, column=0, sticky='w')
-        ctk.CTkLabel(self.audio_save_frame, text='Save pronunciation', font=self.fonts['small'],
-                     text_color=MUTED).pack(side='left', padx=(0, 16))
+        self.audio_save_label = ctk.CTkLabel(self.audio_save_frame, text='Save pronunciation',
+                                            font=self.fonts['small'], text_color=MUTED)
+        self.audio_save_label.pack(side='left', padx=(0, 16))
+        self.audio_region_buttons = []
         for region in ('uk', 'us'):
-            ctk.CTkRadioButton(self.audio_save_frame, text=region.upper(), variable=self.audio_choice,
+            button = ctk.CTkRadioButton(self.audio_save_frame, text=region.upper(), variable=self.audio_choice,
                 value=region, font=self.fonts['body'], width=62, radiobutton_width=18,
-                radiobutton_height=18, command=self.on_audio_choice_changed).pack(side='left', padx=(0, 8))
+                radiobutton_height=18, command=self.on_audio_choice_changed)
+            button.pack(side='left', padx=(0, 8))
+            self.audio_region_buttons.append(button)
         self.add_btn = ctk.CTkButton(self.submit_frame, text='Add to Anki', width=180,
             height=44, font=self.fonts['btn_large'], state='disabled', command=self.confirm_and_add)
         self.typewriter_btn = self.quiet_button(self.submit_frame, 'Send to Typewriter', self.send_to_typewriter, width=150)
@@ -418,8 +428,6 @@ class AnkiAutomataApp(ctk.CTk):
             self.geometry(self._full_geometry)
             for widget in (self.brand_label, self.deck_display, self.context_frame, self.audio_save_frame):
                 widget.grid()
-            self.uk_ipa_label.pack(side='left', after=self.uk_btn, padx=(8, 24))
-            self.us_ipa_label.pack(side='left', after=self.us_btn, padx=8)
             self.compact_btn.configure(text='Compact mode')
             self.deck_btn.configure(text='Change deck')
         self.update_audio_ui()
@@ -485,11 +493,14 @@ class AnkiAutomataApp(ctk.CTk):
     def restore_snapshot(self, snapshot):
         if self._exporting:
             return
+        self.close_voice_dialog()
         self.save_draft()
         self._search_id += 1
         self._audio_id += 1
         self.set_searching(False)
         self.current_scraped_data = snapshot.get('data')
+        if self.current_scraped_data:
+            self.store.restore_audio_choices(self.current_scraped_data)
         if self.current_scraped_data and self.current_scraped_data.get('audio_match_version') != 1:
             self.current_scraped_data = dict(self.current_scraped_data)
             self.current_scraped_data['audio_needs_refresh'] = True
@@ -602,18 +613,69 @@ class AnkiAutomataApp(ctk.CTk):
 
     def update_audio_ui(self):
         data = self.current_scraped_data or {}
+        try:
+            selected = audio_sources.selected_record(data)
+        except ValueError:
+            data.pop('selected_audio', None)
+            data['audio_review_required'] = True
+            selected = None
+        self.other_voices_btn.configure(state='normal' if data and not self._exporting else 'disabled')
+        self.update_save_audio_ui(selected, data.get('audio_review_required', False))
+        self.selected_voice_btn.pack_forget()
         for region, button, label in (('uk', self.uk_btn, self.uk_ipa_label),
                                        ('us', self.us_btn, self.us_ipa_label)):
-            button.configure(state='normal' if data.get(f'{region}_audio') else 'disabled')
+            button.configure(state='normal' if audio_sources.regional_url(data, region) else 'disabled')
             label.configure(text=data.get(f'{region}_ipa') or '—')
-        if not data.get(f'{self.audio_choice.get()}_audio'):
+            button.pack_forget()
+            label.pack_forget()
+            if not selected:
+                button.pack(side='left')
+                if not self._compact:
+                    label.pack(side='left', padx=(8, 12))
+        if selected:
+            self.selected_voice_btn.pack(side='left')
+            accent = selected['accent'].upper() if selected['accent'] != 'unknown' else 'Accent unspecified'
+            self.word_meta.configure(text=f'AUDIO: {selected["label"]} · {accent}')
+            return
+        if not audio_sources.regional_url(data, self.audio_choice.get()):
             for region in ('uk', 'us'):
-                if data.get(f'{region}_audio'):
+                if audio_sources.regional_url(data, region):
                     self.audio_choice.set(region)
                     break
         ipa = data.get(f'{self.audio_choice.get()}_ipa') or ''
-        self.word_meta.configure(text='Search again to refresh pronunciation' if data.get('audio_needs_refresh') else
+        self.word_meta.configure(text='Choose another voice · card will be saved without audio until then' if data.get('audio_review_required') else
+                                 'Search again to refresh pronunciation' if data.get('audio_needs_refresh') else
                                  (ipa + ' · ' if self._compact and ipa else '') + 'CAMBRIDGE DICTIONARY')
+
+    def update_save_audio_ui(self, selected=None, review=False):
+        if not hasattr(self, 'audio_save_label'):
+            return
+        self.audio_save_label.configure(text='Save chosen voice' if selected else
+                                        'Save without audio' if review else 'Save pronunciation')
+        for button in self.audio_region_buttons:
+            button.pack_forget()
+            if not selected and not review:
+                button.pack(side='left', padx=(0, 8))
+
+    def close_voice_dialog(self):
+        dialog = getattr(self, '_voice_dialog', None)
+        if dialog is not None and dialog.winfo_exists():
+            dialog.close()
+        self._voice_dialog = None
+
+    def stop_audio(self):
+        self._audio_id += 1
+        if pygame.mixer.get_init():
+            pygame.mixer.music.stop()
+
+    def open_voice_dialog(self):
+        if not self.current_scraped_data or self._exporting or self._searching:
+            return
+        dialog = getattr(self, '_voice_dialog', None)
+        if dialog is not None and dialog.winfo_exists():
+            dialog.lift()
+            return
+        self._voice_dialog = VoiceDialog(self)
 
     # --- Height Splitter Logic ---
     def _on_splitter_press(self, event):
@@ -828,15 +890,28 @@ class AnkiAutomataApp(ctk.CTk):
         self.ex_area.see("insert")
         return "break" 
 
-    def play_audio(self, region):
+    def play_audio(self, region=None, record=None, on_played=None, valid=None, on_error=None):
         data = self.current_scraped_data
-        if not data or not data.get(f'{region}_audio'):
+        if not data:
+            return
+        try:
+            if region == 'selected':
+                record = audio_sources.selected_record(data)
+            if record:
+                record = audio_sources.validate_record(record, audio_sources.normalize_word(data['word']))
+                if record['id'] in data.get('rejected_audio', []):
+                    return
+            elif not audio_sources.regional_url(data, region):
+                return
+        except ValueError as error:
+            self.log(str(error))
             return
         self._audio_id += 1
         token = self._audio_id
-        self.log(f'Loading {region.upper()} pronunciation…')
+        label = record['label'] if record else region.upper()
+        self.log(f'Loading {label} pronunciation…')
         def ready(content):
-            if token != self._audio_id or self.current_scraped_data is not data:
+            if token != self._audio_id or self.current_scraped_data is not data or (valid and not valid()):
                 return
             try:
                 if not pygame.mixer.get_init():
@@ -844,14 +919,24 @@ class AnkiAutomataApp(ctk.CTk):
                 self._audio_stream = io.BytesIO(content)
                 pygame.mixer.music.load(self._audio_stream)
                 pygame.mixer.music.play()
-                self.log(f'Playing {region.upper()} pronunciation.')
+                self.log(f'Playing {label} pronunciation.')
+                if on_played:
+                    on_played()
             except pygame.error as error:
-                self.log(f'Audio playback failed: {error}')
-        def failed(error):
-            if token == self._audio_id:
+                failed(error, alternatives=False)
+        def failed(error, alternatives=True):
+            if token == self._audio_id and (not valid or valid()):
                 self.log(f'Audio download failed: {error}')
-        url, headers = data[f'{region}_audio'], data.get('headers', {})
-        self.run_task(lambda: engine.download_audio(url, headers), ready, failed)
+                if on_error:
+                    on_error(error)
+                elif alternatives:
+                    self.open_voice_dialog()
+        if record:
+            operation = lambda: audio_sources.AudioSources().recording(record)
+        else:
+            url, headers = audio_sources.regional_url(data, region), data.get('headers', {})
+            operation = lambda: engine.download_audio(url, headers)
+        self.run_task(operation, ready, failed)
 
     def log(self, message):
         self.status_label.configure(text=message)
@@ -995,6 +1080,14 @@ class AnkiAutomataApp(ctk.CTk):
             self.ex_area.insert("0.0", "\n".join([f"• {ex}" for ex in all_ex]))
 
     def reset_audio_ui(self):
+        self.update_save_audio_ui()
+        self.other_voices_btn.configure(state='disabled')
+        self.selected_voice_btn.pack_forget()
+        self.uk_btn.pack(side='left')
+        self.us_btn.pack(side='left')
+        if not self._compact:
+            self.uk_ipa_label.pack(side='left', after=self.uk_btn, padx=(8, 12))
+            self.us_ipa_label.pack(side='left', after=self.us_btn, padx=(8, 12))
         self.uk_btn.configure(state="disabled")
         self.us_btn.configure(state="disabled")
         self.uk_ipa_label.configure(text="-")
@@ -1060,6 +1153,7 @@ class AnkiAutomataApp(ctk.CTk):
         word = ' '.join(self.word_var.get().split())
         if not word:
             return
+        self.close_voice_dialog()
         self.save_draft()
         self._search_id += 1
         self._audio_id += 1
@@ -1109,6 +1203,7 @@ class AnkiAutomataApp(ctk.CTk):
             self.log(f'No entry found for {word}. You can paste a direct dictionary link with Use URL.')
             return
         self.current_scraped_data = data
+        self.store.restore_audio_choices(data)
         self.populate_editor(data, word)
         self.update_audio_ui()
         self.set_duplicates(duplicates)
@@ -1121,8 +1216,14 @@ class AnkiAutomataApp(ctk.CTk):
             self.log(f'{count} meaning group{"s" if count != 1 else ""} · Review your card, then add it to Anki.')
         self.save_draft()
 
+        if data.get('audio_match_version') == 1 and not data.get('selected_audio') and (
+                data.get('audio_review_required') or not any(audio_sources.regional_url(data, r) for r in ('uk', 'us'))):
+            self.open_voice_dialog()
+
     def set_exporting(self, value):
         self._exporting = value
+        if value:
+            self.close_voice_dialog()
         for widget in (self.word_entry, self.def_area, self.ex_area, self.sentence_text,
                        self.search_btn, self.deck_btn, self.history_btn, self.manual_btn):
             widget.configure(state='disabled' if value else 'normal')
