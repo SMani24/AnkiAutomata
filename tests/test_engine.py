@@ -95,10 +95,11 @@ class NetworkTests(unittest.TestCase):
 class ScraperTests(unittest.TestCase):
     HTML = '''
         <div class="pr entry-body__el">
+          <span class="hw dhw">cat</span>
           <div class="pos-header"><span class="pos dpos">noun</span></div>
           <div class="uk"><span class="ipa dipa">kæt</span>
             <source type="audio/mpeg" src="/media/cat.mp3"></div>
-          <div class="us"><source type="audio/mpeg" src="https://cdn.example.org/cat.mp3"></div>
+          <div class="us"><source type="audio/mpeg" src="https://dictionary.cambridge.org/media/us-cat.mp3"></div>
           <div class="dsense"><span class="guideword">(ANIMAL)</span>
             <div class="def-block ddef_block"><div class="def ddef_d">a small animal:</div>
               <span class="eg deg">A cat lives here.</span></div>
@@ -116,7 +117,7 @@ class ScraperTests(unittest.TestCase):
         self.assertEqual(data['examples_raw'], ['A cat lives here.', 'A wild cat.'])
         self.assertEqual(data['uk_ipa'], '/kæt/')
         self.assertEqual(data['uk_audio'], 'https://dictionary.cambridge.org/media/cat.mp3')
-        self.assertEqual(data['us_audio'], 'https://cdn.example.org/cat.mp3')
+        self.assertEqual(data['us_audio'], 'https://dictionary.cambridge.org/media/us-cat.mp3')
         self.assertEqual(get.call_args.kwargs['timeout'], engine.REQUEST_TIMEOUT)
 
     @patch.object(engine.requests, 'get')

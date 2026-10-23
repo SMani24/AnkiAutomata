@@ -21,10 +21,10 @@ class LookupServer(HTTPServer):
 
 
 class LookupHandler(BaseHTTPRequestHandler):
-    def reply(self, status, message):
+    def reply(self, status, message, content_type='text/plain; charset=utf-8'):
         body = message.encode('utf-8')
         self.send_response(status)
-        self.send_header('Content-Type', 'text/plain; charset=utf-8')
+        self.send_header('Content-Type', content_type)
         self.send_header('Content-Length', str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -38,6 +38,13 @@ class LookupHandler(BaseHTTPRequestHandler):
             self.reply(200, 'Lookup queued')
 
     def do_GET(self):
+        if self.path == '/health':
+            self.reply(200, json.dumps({'app': 'ankiautomata', 'api_version': 1,
+                                       'capabilities': ['lookup', 'sentence', 'activate']}), 'application/json')
+            return
+        if self.path == '/activate':
+            self.enqueue({'action': 'activate'})
+            return
         if self.path != '/':
             self.reply(404, 'Not found')
             return
@@ -57,10 +64,14 @@ class LookupHandler(BaseHTTPRequestHandler):
             text = payload.get('text') if isinstance(payload, dict) else None
             if not isinstance(text, str) or not text.strip():
                 raise ValueError('Missing text')
+            sentence = payload.get('sentence')
+            if 'sentence' in payload and not isinstance(sentence, str):
+                raise ValueError('Sentence must be text')
         except (ValueError, UnicodeError):
             self.reply(400, 'Expected JSON containing nonempty text')
             return
-        self.enqueue(' '.join(text.split()))
+        text = ' '.join(text.split())
+        self.enqueue({'text': text, 'sentence': ' '.join(sentence.split())} if sentence is not None else text)
 
     def log_message(self, format, *args):
         pass

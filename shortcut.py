@@ -40,10 +40,15 @@ def selected_text():
     return text
 
 
-def send_lookup(text):
+def send_lookup(text, sentence=None):
     connection = HTTPConnection(HOST, PORT, timeout=3)
     try:
-        body = json.dumps({'text': text}, ensure_ascii=False).encode('utf-8')
+        payload = {'text': text}
+        if sentence is not None:
+            payload['sentence'] = sentence
+        body = json.dumps(payload, ensure_ascii=False).encode('utf-8')
+        if len(body) > MAX_TEXT_BYTES:
+            raise ValueError('The word and sentence together must fit within 4 KB.')
         connection.request('POST', '/lookup', body=body,
                            headers={'Content-Type': 'application/json; charset=utf-8'})
         response = connection.getresponse()
@@ -54,13 +59,21 @@ def send_lookup(text):
         connection.close()
 
 
-def search_selection():
+def search_selection(text=None, sentence=None):
     # Capture first: starting or focusing the GUI can change the desktop selection.
-    text = selected_text()
+    text = selected_text() if text is None else text.strip()
+    if not text:
+        raise ValueError('Enter a nonempty word or phrase.')
     try:
-        send_lookup(text)
+        if sentence is None:
+            send_lookup(text)
+        else:
+            send_lookup(text, sentence)
     except ConnectionRefusedError:
-        subprocess.Popen([sys.executable, str(ROOT / 'main.py'), f'--lookup={text}'],
+        command = [sys.executable, str(ROOT / 'main.py'), f'--lookup={text}']
+        if sentence is not None:
+            command.append(f'--sentence={sentence}')
+        subprocess.Popen(command,
                          cwd=ROOT, start_new_session=True)
 
 
@@ -99,13 +112,15 @@ def install_shortcut():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--install', action='store_true', help='install or repair the GNOME/Pop!_OS shortcut')
+    parser.add_argument('--text', help='look up supplied text instead of the desktop selection')
+    parser.add_argument('--sentence', help='sentence context to send with the lookup')
     args = parser.parse_args()
     try:
         if args.install:
             binding = install_shortcut()
             print(f'AnkiAutomata shortcut installed: {binding}')
         else:
-            search_selection()
+            search_selection(args.text, args.sentence)
     except (OSError, RuntimeError, subprocess.SubprocessError, ValueError) as error:
         print(f'AnkiAutomata: {error}', file=sys.stderr)
         return 1

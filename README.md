@@ -16,13 +16,14 @@ A focused desktop workspace for turning words from your reading into Anki cards.
 ## Features
 
 - **Selected-text shortcut:** searches highlighted words or phrases without changing your clipboard; opens the app if it is closed.
-- **Focused editor:** warm light and charcoal dark themes, a teal accent, adjustable text sizes, and a collapsible activity log. Preferences live in Settings.
+- **Focused editor:** warm light and charcoal dark themes, a teal accent, adjustable text sizes, and a collapsible activity log. Settings offers Sage, Ocean, Plum, and Amber color schemes, each with light and dark appearances.
 - **Responsive lookups:** dictionary requests, duplicate checks, audio downloads, deck loading, and exports run in the background. Results from older searches cannot overwrite your latest lookup.
 - **Compact mode:** a smaller window for reading beside a PDF. Switch back to the full editor to work with sentence context and additional controls; your edits stay intact.
 - **Useful duplicate handling:** compares the exact rendered Front field for the configured note type in the selected deck and its subdecks. Existing cards get a preview and an **Open in Anki** action. Matches inside examples or longer words do not block a lookup, and duplicates are checked again before exporting.
+- **Typewriter integration:** send the reviewed word, definition, and sentence to the running Typewriter app without clearing your Anki draft or overwriting an existing Typewriter word.
 - **Recent lookups and recovery:** the twenty most recent words retain their edited definitions, examples, sentence, meaning selection, deck, and audio choice. Drafts autosave after a short typing pause and recover when you reopen the app.
 - **Cambridge meanings:** extracts definitions and examples, groups related senses by part of speech and guideword, and lets you select one group or combine them all.
-- **Pronunciation:** UK and US IPA and audio previews, plus media uploads through AnkiConnect. A missing regional recording falls back to an available one.
+- **Pronunciation:** speaker/flag buttons play UK and US audio. Recordings and IPA must come from an entry matching the exact headword; choosing a meaning also selects its entry’s pronunciation. Redirected base words and unrelated entries cannot supply audio. A missing regional recording falls back to an available one. Re-search older drafts to refresh pronunciation links.
 - **Editable card content:** preserves line breaks, indentation, and highlighted target words while escaping plain text correctly for Anki HTML.
 
 ## Installation
@@ -34,7 +35,7 @@ git clone https://github.com/SMani24/AnkiAutomata.git
 cd AnkiAutomata
 python3 -m venv envAnkiAutomata
 source envAnkiAutomata/bin/activate
-pip install customtkinter requests beautifulsoup4 pyperclip pygame
+pip install -r requirements.txt
 ```
 
 On Windows, activate the environment with `envAnkiAutomata\Scripts\activate`. Linux distributions may package Tkinter separately, for example `sudo apt install python3-tk`.
@@ -44,6 +45,16 @@ Keep Anki Desktop running, configure the note type below, and launch:
 ```bash
 python main.py
 ```
+
+For a Linux application-menu entry, application icon, and desktop shortcut, run:
+
+```bash
+python desktop.py --desktop
+```
+
+The installer replaces this project's older generic launcher and keeps the virtual-environment interpreter. Clicking the launcher focuses an existing window instead of opening another copy. Omit `--desktop` if you only want the menu entry. Run the installer again after moving the repository.
+
+To use **Send to Typewriter**, start Typewriter at `http://127.0.0.1:8080` and review a word in AnkiAutomata. Sending keeps your Anki draft and preserves any existing Typewriter word and its progress. For a different local port, set `preferences.typewriter_url` in `config.json`. Audio checking and spelling-tip preparation remain in Typewriter.
 
 Audio playback initializes the audio device only when requested. You can browse and edit dictionary results while Anki is offline; Anki must be available when adding cards.
 
@@ -99,11 +110,12 @@ On another Linux desktop, add a custom shortcut in Keyboard Settings using the a
 
 Type a word or phrase and press Enter or Search. Select a meaning, edit the definition and examples, and optionally add your own sentence. **Use URL** accepts a direct Cambridge Dictionary link when a normal lookup does not find the intended entry. Drag the divider between definitions and examples to adjust the definition height.
 
-**Settings** controls appearance, text size, default meaning combination, and pronunciation region. **Recent lookups** restores a previous word with your edits. **Activity** opens the detailed log.
+**Settings** controls appearance, color scheme, text size, default meaning combination, and pronunciation region. **Recent lookups** restores a previous word with your edits. **Activity** opens the detailed log.
 
 | Shortcut | Action |
 | --- | --- |
 | Ctrl+Alt+W | Search the selection from your PDF; requires the desktop shortcut |
+| Ctrl+A in search | Select the full query |
 | Ctrl+L | Focus and select the search field |
 | Ctrl+Enter | Add the reviewed card to Anki |
 | Ctrl+Shift+M | Switch between compact mode and the full editor |
@@ -120,6 +132,14 @@ The original clipboard trigger still works with an already running instance:
 ```bash
 curl -s http://127.0.0.1:24536/
 ```
+
+Typewriter or other local clients can include sentence context:
+
+```json
+{"text": "serendipity", "sentence": "It was pure serendipity."}
+```
+
+`GET /health` reports the app identity and API version without triggering a lookup; `GET /activate` focuses the window without reading the clipboard. The CLI also accepts `python shortcut.py --text=serendipity --sentence="It was pure serendipity."`, including cold start. The full [Typewriter team handoff](docs/TYPEWRITER_INTEGRATION_REQUEST.md) describes the working export and requested return button.
 
 Other applications can submit UTF-8 JSON to `POST http://127.0.0.1:24536/lookup`, for example `{"text": "retrospect"}`. The server listens only on loopback, queues requests for the GUI thread, and limits selected-text requests to 4 KB. Shortcut requests received during an export wait until it finishes.
 
@@ -141,4 +161,10 @@ xvfb-run -a python tests/gui_smoke.py
 
 The GUI checks use isolated temporary state and mocked Anki operations. `tests/ankil_test.py` and `tests/scraper_test.py` are older manual integration scripts; explicitly running the Anki script creates a real note in your collection.
 
-The main components are `main.py` (UI), `engine.py` (scraping and Anki), `background.py` (worker tasks), `storage.py` (drafts/history), `ipc.py` (local request server), `shortcut.py` (desktop integration), and `theme.json` (widget theme).
+An optional check against Typewriter's actual source uses its own Python environment and an isolated notebook:
+
+```bash
+../Typewriter/.venv/bin/python tests/typewriter_integration.py --typewriter-root ../Typewriter
+```
+
+The main components are `main.py` (UI), `engine.py` (scraping and Anki), `background.py` (worker tasks), `storage.py` (drafts/history), `ipc.py` (local request server), `shortcut.py` (desktop integration), `theme.json`/`themes.py` (widget themes), `desktop.py`/`assets/` (desktop integration and icons), and `typewriter_client.py` (local Typewriter adapter).

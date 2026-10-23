@@ -26,6 +26,7 @@ class AppTests(unittest.TestCase):
         app._duplicate_notes = []
         app._search_id = 1
         app._audio_id = 1
+        app._typewriter_sending = False
         return app
 
     def test_import_does_not_initialize_audio(self):
@@ -115,7 +116,7 @@ class AppTests(unittest.TestCase):
         app = self.make_app()
         AnkiAutomataApp.process_text(app, '  selected\n word  ')
         app.word_var.set.assert_called_once_with('selected word')
-        app.focus_force.assert_called_once()
+        app.activate_window.assert_called_once()
         app.search_word.assert_called_once()
 
     @patch('main.pyperclip.paste')

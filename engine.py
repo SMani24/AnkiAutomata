@@ -4,9 +4,10 @@ import re
 import os
 import tempfile
 import base64
+import unicodedata
 from html import escape
 from pathlib import Path
-from urllib.parse import quote, urljoin
+from urllib.parse import quote, urljoin, urlparse
 from bs4 import BeautifulSoup
 
 CONFIG_FILE = Path(__file__).resolve().with_name('config.json')
@@ -210,12 +211,43 @@ def group_senses(senses):
                 "pos": pos,
                 "guideword": gw,
                 "definitions": [s['definition']],
-                "examples": list(s.get('examples', []))
+                "examples": list(s.get('examples', [])),
+                "pronunciation_id": s.get('pronunciation_id')
             }
             group_map[key] = new_grp
             groups.append(new_grp)
 
     return groups
+
+def _normalized_headword(word):
+    return ' '.join(unicodedata.normalize('NFKC', word).casefold().split())
+
+def _entry_pronunciation(entry, word, source_url):
+    # Typewriter's matching-headword approach: redirects and nearby entries must
+    # never supply another word's recording. Keep IPA and audio in the same entry.
+    headings = entry.select('.hw.dhw, .headword .hw, .di-title')
+    matching = any(_normalized_headword(heading.get_text(' ', strip=True)) == _normalized_headword(word)
+                   and heading.find_parent(class_='entry-body__el') is entry for heading in headings)
+    if not matching:
+        return None
+    record = {}
+    for region in ('uk', 'us'):
+        source = entry.select_one(f'.pos-header .{region} source[type="audio/mpeg"], .{region} source[type="audio/mpeg"]')
+        ipa = entry.select_one(f'.pos-header .{region} .ipa.dipa, .{region} .ipa.dipa')
+        url = urljoin(source_url, source.get('src', '')) if source and source.get('src') else ''
+        parsed = urlparse(url)
+        valid = (parsed.scheme == 'https' and parsed.hostname == 'dictionary.cambridge.org'
+                 and not parsed.username and not parsed.password and parsed.port in (None, 443)
+                 and parsed.path.lower().endswith('.mp3'))
+        record[f'{region}_audio'] = url if valid else None
+        record[f'{region}_ipa'] = f'/{ipa.get_text(strip=True)}/' if ipa else ''
+    return record
+
+def pronunciation_for_group(data, group=None):
+    choices = data.get('pronunciations', {})
+    key = str(group.get('pronunciation_id')) if group else next(iter(choices), '')
+    return choices.get(key) or {f'{region}_{field}': None if field == 'audio' else ''
+                                for region in ('uk', 'us') for field in ('audio', 'ipa')}
 
 def scrape_cambridge(word, manual_url=None):
     headers = {"User-Agent": config['scraper']['user_agent']}
@@ -243,7 +275,12 @@ def scrape_cambridge(word, manual_url=None):
     all_examples = []
     seen_definitions = set()
 
-    for entry in entries:
+    source_url = response.url if isinstance(response.url, str) else url
+    pronunciations = {}
+    for index, entry in enumerate(entries):
+        pronunciation = _entry_pronunciation(entry, word, source_url)
+        if pronunciation is not None:
+            pronunciations[str(index)] = pronunciation
         entry_pos_el = entry.select_one('.pos-header .pos.dpos, .pos.dpos')
         default_pos = entry_pos_el.text.strip() if entry_pos_el else ""
 
@@ -291,7 +328,8 @@ def scrape_cambridge(word, manual_url=None):
                 "pos": pos,
                 "guideword": guideword,
                 "definition": def_text,
-                "examples": block_examples
+                "examples": block_examples,
+                "pronunciation_id": str(index)
             })
 
     if not senses:
@@ -312,18 +350,8 @@ def scrape_cambridge(word, manual_url=None):
     if not senses:
         return None
 
-    uk_ipa_element = soup.select_one('.uk .ipa.dipa')
-    uk_audio_source = soup.select_one('.uk source[type="audio/mpeg"]')
-    
-    us_ipa_element = soup.select_one('.us .ipa.dipa')
-    us_audio_source = soup.select_one('.us source[type="audio/mpeg"]')
-    
-    uk_ipa = f"/{uk_ipa_element.text.strip()}/" if uk_ipa_element else ""
-    us_ipa = f"/{us_ipa_element.text.strip()}/" if us_ipa_element else ""
-    uk_audio = urljoin(url, uk_audio_source['src']) if (uk_audio_source and uk_audio_source.get('src')) else None
-    us_audio = urljoin(url, us_audio_source['src']) if (us_audio_source and us_audio_source.get('src')) else None
-
     groups = group_senses(senses)
+    pronunciation = pronunciation_for_group({'pronunciations': pronunciations}, groups[0] if groups else None)
 
     return {
         "word": word,
@@ -331,9 +359,9 @@ def scrape_cambridge(word, manual_url=None):
         "groups": groups,
         "definition": senses[0]["definition"] if senses else "No definition found.",
         "examples_raw": all_examples,
-        "uk_ipa": uk_ipa,
-        "us_ipa": us_ipa,
-        "uk_audio": uk_audio,
-        "us_audio": us_audio,
+        **pronunciation,
+        "pronunciations": pronunciations,
+        "audio_match_version": 1,
+        "source_url": source_url,
         "headers": headers
     }

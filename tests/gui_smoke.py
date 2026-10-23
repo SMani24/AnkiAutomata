@@ -12,6 +12,8 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import engine
+import typewriter_client
+from themes import palette
 from main import AnkiAutomataApp
 from storage import StateStore
 
@@ -19,9 +21,11 @@ from storage import StateStore
 def dictionary_entry(word='serendipity'):
     return {'word': word, 'definition': 'a happy discovery',
             'groups': [{'pos': 'noun', 'guideword': 'DISCOVERY',
-                        'definitions': ['a happy discovery'], 'examples': [f'A little {word}.']}],
+                        'definitions': ['a happy discovery'], 'examples': [f'A little {word}.'], 'pronunciation_id': '0'}],
             'examples_raw': [f'A little {word}.'],
-            'uk_audio': '/uk.mp3', 'us_audio': None, 'uk_ipa': '/test/', 'us_ipa': '', 'headers': {}}
+            'uk_audio': '/uk.mp3', 'us_audio': None, 'uk_ipa': '/test/', 'us_ipa': '', 'headers': {},
+            'audio_match_version': 1, 'pronunciations': {'0': {'uk_audio': '/uk.mp3', 'us_audio': None,
+                                                             'uk_ipa': '/test/', 'us_ipa': ''}}}
 
 
 class GuiSmokeTests(unittest.TestCase):
@@ -177,6 +181,71 @@ class GuiSmokeTests(unittest.TestCase):
         self.assertEqual(self.app.add_btn.cget('state'), 'disabled')
         self.assertGreater(self.app.ex_area.winfo_height(), 20)
         self.assertTrue(self.app.open_note_btn.winfo_ismapped())
+
+    def test_search_control_a_selects_all_instead_of_moving_cursor(self):
+        self.app.word_var.set('a full search phrase')
+        field = self.app.word_entry._entry
+        field.focus_force()
+        field.event_generate('<Control-a>')
+        self.app.update()
+        self.assertTrue(field.selection_present())
+        self.assertEqual(field.index('sel.first'), 0)
+        self.assertEqual(field.index('sel.last'), len('a full search phrase'))
+
+    def test_palettes_update_existing_widgets_without_losing_content(self):
+        self.show_word()
+        text = self.app.def_area.get('1.0', 'end-1c')
+        try:
+            for name in ('Ocean', 'Plum', 'Amber', 'Sage'):
+                self.app.on_color_scheme_changed(name)
+                self.app.update()
+                self.assertEqual(tuple(self.app.right_frame.cget('fg_color')), palette(name)['surface'])
+                self.assertEqual(tuple(self.app.search_btn.cget('fg_color')), palette(name)['accent'])
+                self.assertEqual(self.app.def_area.get('1.0', 'end-1c'), text)
+        finally:
+            self.app.on_color_scheme_changed('Sage')
+
+    def test_pronunciation_buttons_use_images_and_window_has_app_identity(self):
+        for button in (self.app.uk_btn, self.app.us_btn):
+            self.assertEqual(button.cget('text'), '')
+            self.assertIsNotNone(button.cget('image'))
+        self.assertEqual(self.app.winfo_class(), 'Ankiautomata')
+
+    def test_selecting_meaning_uses_its_entry_pronunciation(self):
+        self.show_word('record')
+        data = self.app.current_scraped_data
+        data['groups'].append({'pos': 'verb', 'guideword': 'KEEP', 'definitions': ['to keep a record'],
+                               'examples': ['Record this.'], 'pronunciation_id': '1'})
+        data['pronunciations']['1'] = {'uk_audio': '/verb-record.mp3', 'uk_ipa': '/verb/',
+                                      'us_audio': None, 'us_ipa': ''}
+        self.app.apply_group(1)
+        self.assertEqual(data['uk_audio'], '/verb-record.mp3')
+        self.assertEqual(self.app.uk_ipa_label.cget('text'), '/verb/')
+
+    def test_old_draft_does_not_reuse_unmatched_legacy_audio(self):
+        self.show_word()
+        snapshot = self.app.snapshot()
+        snapshot['data'].pop('audio_match_version')
+        self.app.restore_snapshot(snapshot)
+        self.pump_until(lambda: not self.app._searching)
+        self.assertIsNone(self.app.current_scraped_data['uk_audio'])
+        self.assertEqual(self.app.uk_btn.cget('state'), 'disabled')
+
+    def test_context_lookup_preserves_the_received_sentence(self):
+        with patch.object(engine, 'scrape_cambridge', return_value=dictionary_entry('cat')):
+            self.app.lookup_requests.put({'text': 'cat', 'sentence': 'The cat sleeps.'})
+            self.app.check_triggers()
+            self.pump_until(lambda: self.app.current_scraped_data is not None and not self.app._searching)
+        self.assertEqual(self.app.sentence_text.get('1.0', 'end-1c'), 'The cat sleeps.')
+
+    def test_typewriter_export_preserves_the_anki_draft(self):
+        self.show_word()
+        with patch.object(typewriter_client, 'send_word', return_value={'added': [1], 'duplicates': []}) as send:
+            self.app.send_to_typewriter()
+            self.pump_until(lambda: not self.app._typewriter_sending)
+        self.assertEqual(send.call_args.args[0]['word'], 'serendipity')
+        self.assertIsNotNone(self.app.current_scraped_data)
+        self.assertIsNotNone(self.app.store.draft)
 
 
 if __name__ == '__main__':

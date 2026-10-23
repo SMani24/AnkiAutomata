@@ -9,18 +9,19 @@ from pathlib import Path
 from queue import Empty, Full, Queue
 import threading
 import engine
+from PIL import Image
+import typewriter_client
+from themes import PALETTES, palette, theme, recolor_widgets
 from ipc import LookupServer
 from background import BackgroundTasks
 from storage import StateStore
 
-ctk.set_default_color_theme(str(Path(__file__).with_name('theme.json')))
+ctk.ThemeManager.theme = theme(engine.get_preference('color_scheme', 'Sage'))
 ctk.set_appearance_mode(engine.get_preference('appearance', 'System'))
 
-SURFACE = ('#FFFFFF', '#1C2825')
-FIELD = ('#F8FAF6', '#17221F')
-MUTED = ('#647874', '#98ABA5')
-BORDER = ('#DCE4DC', '#344740')
-TEXT = ('#243B3A', '#E5EEEB')
+COLORS = palette(engine.get_preference('color_scheme', 'Sage'))
+SURFACE, FIELD, MUTED, BORDER, TEXT = (COLORS[key] for key in ('surface', 'field', 'muted', 'border', 'text'))
+ASSETS = Path(__file__).with_name('assets')
 
 class DeckSelectionDialog(ctk.CTkToplevel):
     def __init__(self, parent, decks, current_deck, font=None):
@@ -42,11 +43,11 @@ class DeckSelectionDialog(ctk.CTkToplevel):
         if mode == "Dark":
             bg_color = SURFACE[1]
             text_color = TEXT[1]
-            sel_bg = "#35735F"
+            sel_bg = COLORS['hover'][1]
         else:
             bg_color = SURFACE[0]
             text_color = TEXT[0]
-            sel_bg = "#276B5B"
+            sel_bg = COLORS['accent'][0]
             
         style.theme_use("default")
         style.configure("Treeview", background=bg_color, foreground=text_color, 
@@ -88,8 +89,10 @@ class DeckSelectionDialog(ctk.CTkToplevel):
         self.destroy()
 
 class AnkiAutomataApp(ctk.CTk):
-    def __init__(self, initial_word=None):
-        super().__init__()
+    def __init__(self, initial_word=None, initial_sentence=None):
+        super().__init__(className='AnkiAutomata')
+        self._window_icon = tk.PhotoImage(master=self, file=str(ASSETS / 'ankiautomata.png'))
+        self.iconphoto(True, self._window_icon)
             
         self.title("AnkiAutomata")
         
@@ -115,6 +118,7 @@ class AnkiAutomataApp(ctk.CTk):
         self._closing = False
         self._searching = False
         self._exporting = False
+        self._typewriter_sending = False
         self._search_id = 0
         self._audio_id = 0
         self._duplicate_notes = []
@@ -139,7 +143,7 @@ class AnkiAutomataApp(ctk.CTk):
         self.topbar.grid(row=0, column=0, sticky="ew", padx=28, pady=(22, 16))
         self.topbar.grid_columnconfigure(1, weight=1)
         ctk.CTkLabel(self.topbar, text="a", width=36, height=36, corner_radius=10,
-                     fg_color=('#276B5B', '#438D78'), text_color='white',
+                     fg_color=COLORS['accent'], text_color='white',
                      font=self.fonts['title']).grid(row=0, column=0, padx=(0, 12))
         self.brand_label = ctk.CTkLabel(self.topbar, text="AnkiAutomata", font=self.fonts['title'], anchor='w')
         self.brand_label.grid(row=0, column=1, sticky='w')
@@ -189,11 +193,16 @@ class AnkiAutomataApp(ctk.CTk):
 
         self.audio_frame = ctk.CTkFrame(self.right_frame, fg_color='transparent')
         self.audio_frame.grid(row=2, column=0, sticky='ew', padx=24, pady=(0, 14))
-        self.uk_btn = self.quiet_button(self.audio_frame, 'Play UK', lambda: self.play_audio('uk'), width=78)
+        self._audio_icons = {region: ctk.CTkImage(
+            light_image=Image.open(ASSETS / f'audio-{region}-light.png'),
+            dark_image=Image.open(ASSETS / f'audio-{region}-dark.png'), size=(56, 28)) for region in ('uk', 'us')}
+        self.uk_btn = self.quiet_button(self.audio_frame, '', lambda: self.play_audio('uk'),
+                                        image=self._audio_icons['uk'], width=72)
         self.uk_btn.pack(side='left')
         self.uk_ipa_label = ctk.CTkLabel(self.audio_frame, text='—', font=self.fonts['body'], text_color=MUTED)
         self.uk_ipa_label.pack(side='left', padx=(8, 24))
-        self.us_btn = self.quiet_button(self.audio_frame, 'Play US', lambda: self.play_audio('us'), width=78)
+        self.us_btn = self.quiet_button(self.audio_frame, '', lambda: self.play_audio('us'),
+                                        image=self._audio_icons['us'], width=72)
         self.us_btn.pack(side='left')
         self.us_ipa_label = ctk.CTkLabel(self.audio_frame, text='—', font=self.fonts['body'], text_color=MUTED)
         self.us_ipa_label.pack(side='left', padx=8)
@@ -272,7 +281,10 @@ class AnkiAutomataApp(ctk.CTk):
                 radiobutton_height=18, command=self.on_audio_choice_changed).pack(side='left', padx=(0, 8))
         self.add_btn = ctk.CTkButton(self.submit_frame, text='Add to Anki', width=180,
             height=44, font=self.fonts['btn_large'], state='disabled', command=self.confirm_and_add)
-        self.add_btn.grid(row=0, column=1, sticky='e')
+        self.typewriter_btn = self.quiet_button(self.submit_frame, 'Send to Typewriter', self.send_to_typewriter, width=150)
+        self.typewriter_btn.grid(row=0, column=1, padx=(8, 12))
+        self.typewriter_btn.configure(state='disabled')
+        self.add_btn.grid(row=0, column=2, sticky='e')
 
         self.status_frame = ctk.CTkFrame(self, fg_color='transparent')
         self.status_frame.grid(row=5, column=0, sticky='ew', padx=28, pady=(0, 12))
@@ -285,6 +297,8 @@ class AnkiAutomataApp(ctk.CTk):
         self.log_area = ctk.CTkTextbox(self, height=100, font=self.fonts['log'], state='disabled')
 
         self.word_entry.bind('<Return>', lambda event: self.search_word())
+        for shortcut in ('<Control-a>', '<Control-A>', '<Command-a>', '<Command-A>'):
+            self.word_entry.bind(shortcut, self.select_search_all)
         self.word_entry.focus()
         self.word_var.trace_add('write', lambda *_: self.schedule_autosave())
         for editor in (self.def_area, self.ex_area, self.sentence_text):
@@ -307,7 +321,8 @@ class AnkiAutomataApp(ctk.CTk):
         self.server_thread = threading.Thread(target=self.start_local_server, daemon=True)
         self.server_thread.start()
         if initial_word:
-            self.lookup_requests.put_nowait(initial_word)
+            self.lookup_requests.put_nowait({'text': initial_word, 'sentence': initial_sentence}
+                                              if initial_sentence is not None else initial_word)
         self._trigger_after = self.after(200, self.check_triggers)
 
     def quiet_button(self, parent, text, command, **kwargs):
@@ -324,7 +339,7 @@ class AnkiAutomataApp(ctk.CTk):
     def open_settings(self):
         dialog = ctk.CTkToplevel(self)
         dialog.title('Settings')
-        dialog.geometry('420x420')
+        dialog.geometry('440x500')
         dialog.transient(self)
         dialog.grab_set()
         dialog.bind('<Escape>', lambda event: dialog.destroy())
@@ -333,6 +348,10 @@ class AnkiAutomataApp(ctk.CTk):
         appearance = ctk.CTkOptionMenu(dialog, values=['System', 'Light', 'Dark'], command=self.on_appearance_changed)
         appearance.set(engine.get_preference('appearance', 'System'))
         appearance.pack(fill='x', padx=24, pady=(6, 14))
+        ctk.CTkLabel(dialog, text='Color scheme', font=self.fonts['small'], text_color=MUTED).pack(anchor='w', padx=24)
+        scheme = ctk.CTkOptionMenu(dialog, values=list(PALETTES), command=self.on_color_scheme_changed)
+        scheme.set(engine.get_preference('color_scheme', 'Sage'))
+        scheme.pack(fill='x', padx=24, pady=(6, 14))
         ctk.CTkLabel(dialog, text='Text size', font=self.fonts['small'], text_color=MUTED).pack(anchor='w', padx=24)
         scale = ctk.CTkOptionMenu(dialog, values=list(self.font_scale_factors), command=self.on_font_scale_changed)
         scale.set(self.current_scale_choice)
@@ -347,6 +366,20 @@ class AnkiAutomataApp(ctk.CTk):
     def on_appearance_changed(self, choice):
         ctk.set_appearance_mode(choice)
         engine.save_preference('appearance', choice)
+
+    def on_color_scheme_changed(self, name):
+        global COLORS, SURFACE, FIELD, MUTED, BORDER, TEXT
+        old = COLORS
+        COLORS = palette(name)
+        SURFACE, FIELD, MUTED, BORDER, TEXT = (COLORS[key] for key in ('surface', 'field', 'muted', 'border', 'text'))
+        ctk.ThemeManager.theme = theme(name)
+        recolor_widgets(self, old, COLORS)
+        engine.save_preference('color_scheme', name)
+
+    def select_search_all(self, event=None):
+        self.word_entry.select_range(0, 'end')
+        self.word_entry.icursor('end')
+        return 'break'
 
     def focus_search(self, event=None):
         self.word_entry.focus_set()
@@ -457,12 +490,20 @@ class AnkiAutomataApp(ctk.CTk):
         self._audio_id += 1
         self.set_searching(False)
         self.current_scraped_data = snapshot.get('data')
+        if self.current_scraped_data and self.current_scraped_data.get('audio_match_version') != 1:
+            self.current_scraped_data = dict(self.current_scraped_data)
+            self.current_scraped_data['audio_needs_refresh'] = True
+            for region in ('uk', 'us'):
+                self.current_scraped_data[f'{region}_audio'] = None
+                self.current_scraped_data[f'{region}_ipa'] = ''
         self.word_var.set(snapshot.get('query', snapshot['word']))
         self.deck_var.set(snapshot.get('deck') or self.deck_var.get())
         self.audio_choice.set(snapshot.get('audio', 'uk'))
         self.set_duplicates([])
         if self.current_scraped_data:
             self.populate_editor(self.current_scraped_data, snapshot['word'])
+            if snapshot.get('sense'):
+                self.on_sense_changed(snapshot['sense'])
             for editor, key in ((self.def_area, 'definition'), (self.ex_area, 'examples')):
                 editor.delete('1.0', 'end')
                 editor.insert('1.0', snapshot.get(key, ''))
@@ -517,6 +558,8 @@ class AnkiAutomataApp(ctk.CTk):
         enabled = (self.current_scraped_data is not None and not self._searching
                    and not self._exporting and not self._duplicate_notes)
         self.add_btn.configure(state='normal' if enabled else 'disabled')
+        can_send = self.current_scraped_data is not None and not self._searching and not self._exporting and not self._typewriter_sending
+        self.typewriter_btn.configure(state='normal' if can_send else 'disabled')
 
     def set_duplicates(self, notes):
         self._duplicate_notes = notes
@@ -569,7 +612,8 @@ class AnkiAutomataApp(ctk.CTk):
                     self.audio_choice.set(region)
                     break
         ipa = data.get(f'{self.audio_choice.get()}_ipa') or ''
-        self.word_meta.configure(text=(ipa + ' · ' if self._compact and ipa else '') + 'CAMBRIDGE DICTIONARY')
+        self.word_meta.configure(text='Search again to refresh pronunciation' if data.get('audio_needs_refresh') else
+                                 (ipa + ' · ' if self._compact and ipa else '') + 'CAMBRIDGE DICTIONARY')
 
     # --- Height Splitter Logic ---
     def _on_splitter_press(self, event):
@@ -577,7 +621,7 @@ class AnkiAutomataApp(ctk.CTk):
         self._drag_start_y = event.y_root
         h = self.def_area.winfo_height()
         self._drag_start_h = h if h > 1 else self.def_area.cget("height")
-        self.splitter.configure(fg_color=('#276B5B', '#438D78'))
+        self.splitter.configure(fg_color=COLORS['accent'])
 
     def _on_splitter_drag(self, event):
         if not self._is_dragging_splitter: return
@@ -740,6 +784,11 @@ class AnkiAutomataApp(ctk.CTk):
                 return
             if text is None:
                 self.process_clipboard()
+            elif isinstance(text, dict):
+                if text.get('action') == 'activate':
+                    self.activate_window()
+                else:
+                    self.process_text(text['text'], text.get('sentence'))
             else:
                 self.process_text(text)
         finally:
@@ -873,6 +922,11 @@ class AnkiAutomataApp(ctk.CTk):
             return
         if not self.current_scraped_data: return
         groups = self.current_scraped_data.get('groups', [])
+        if self.current_scraped_data.get('audio_match_version') == 1:
+            group = groups[int(group_choice)] if group_choice != 'all' and 0 <= int(group_choice) < len(groups) else None
+            self.current_scraped_data.update(engine.pronunciation_for_group(self.current_scraped_data, group))
+            self._audio_id += 1
+            self.update_audio_ui()
         
         if group_choice == "all":
             group_blocks = []
@@ -954,18 +1008,51 @@ class AnkiAutomataApp(ctk.CTk):
             return
         self.process_text(clipboard_text)
 
-    def process_text(self, text):
+    def process_text(self, text, sentence=None):
         text = ' '.join(text.split())
         if not text: return
 
+        self.save_draft()
+        self.current_scraped_data = None
+        self.activate_window()
+        self.word_var.set(text)
+        if sentence is not None:
+            self.sentence_text.delete('1.0', 'end')
+            self.sentence_text.insert('1.0', sentence)
+        self.search_word()
+
+    def activate_window(self):
         self.deiconify()
         self.lift()
         self.attributes('-topmost', True)
         self.attributes('-topmost', False)
-        
         self.focus_force()
-        self.word_var.set(text)
-        self.search_word()
+
+    def send_to_typewriter(self):
+        if not self.current_scraped_data or self._typewriter_sending or self._exporting or self._searching:
+            return
+        try:
+            item = typewriter_client.prepare_word(self.snapshot())
+        except ValueError as error:
+            self.log(str(error))
+            return
+        self.save_draft()
+        self._typewriter_sending = True
+        self.typewriter_btn.configure(text='Sending…')
+        self.refresh_add_state()
+        address = engine.get_preference('typewriter_url', 'http://127.0.0.1:8080')
+        def finish():
+            self._typewriter_sending = False
+            self.typewriter_btn.configure(text='Send to Typewriter')
+            self.refresh_add_state()
+        def done(result):
+            finish()
+            self.log(f'{item["word"]} already exists in Typewriter; its progress was preserved.' if result['duplicates']
+                     else f'Sent {item["word"]} to Typewriter.')
+        def failed(error):
+            finish()
+            self.log(f'Could not send to Typewriter. Start it on {address} and try again. {error}')
+        self.run_task(lambda: typewriter_client.send_word(item, address), done, failed)
 
     def search_word(self, manual_url=None):
         if self._exporting:
@@ -1078,6 +1165,7 @@ class AnkiAutomataApp(ctk.CTk):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Cambridge Dictionary to Anki')
     parser.add_argument('--lookup', help='search this word after opening the window')
+    parser.add_argument('--sentence', help='sentence context for the initial lookup')
     args = parser.parse_args()
-    app = AnkiAutomataApp(initial_word=args.lookup)
+    app = AnkiAutomataApp(initial_word=args.lookup, initial_sentence=args.sentence)
     app.mainloop()
